@@ -1,0 +1,333 @@
+"""Formulas written as Python functions of the cell: formula=lambda x: max(0, 25_000 - x["cash"]).
+
+A function formula is first called once with symbolic cells (`Here`). If it only uses the
+expression grammar it returns an expression, and the formula is stored as that expression.
+Otherwise it is kept as a `CellFunction` and called for each cell with `x`, a `Bound`: numbers
+on demand, so plain Python (max, min, if/else, math) works.
+"""
+
+from __future__ import annotations
+
+import ast
+import inspect
+import linecache
+import types
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any
+
+from .errors import DefinitionError
+from .expr import Cell, Condition, Expr
+
+if TYPE_CHECKING:
+    from .model import Item, Model
+
+
+def _item_or_label(cell: Cell, key: str) -> Cell:
+    """x["cash"]: the item `cash` at the same coords; otherwise a label of x's own item."""
+    model = cell.model
+    if key in model.items:
+        return model[key]
+    return cell[key]
+
+
+class Here(Cell):
+    """The symbolic `x` a function formula is first called with."""
+
+    def __getitem__(self, key: str) -> Cell:  # type: ignore[override]
+        return _item_or_label(self, key)
+
+
+class Bound:
+    """`x` for one cell: behaves as that cell's number; x["item"], .lag() etc. read others."""
+
+    __slots__ = ("_at", "_cell", "_model", "_reads")
+
+    def __init__(self, model: Model, cell: Cell, at: Mapping[str, str], reads: list):
+        self._model, self._cell, self._at, self._reads = model, cell, dict(at), reads
+
+    def _wrap(self, cell: Cell) -> Bound:
+        return Bound(self._model, cell, self._at, self._reads)
+
+    def __float__(self) -> float:
+        open_dims = [d for d in self._cell.free_dims() if d not in self._at]
+        if open_dims:
+            raise DefinitionError(
+                f"x: {self._cell!r} leaves {', '.join(open_dims)} open, which this cell doesn't have; "
+                f"pick a label, e.g. x[{self._cell.item.name!r}].sel({open_dims[0]}=...)"
+            )
+        self._reads.append((self._cell, self._at))
+        return float(self._model._lookup(self._cell, self._at))
+
+    # reading other cells
+    def __getitem__(self, key: str) -> Bound:
+        return self._wrap(_item_or_label(self._cell, key))
+
+    def sel(self, **coords: str) -> Bound:
+        return self._wrap(self._cell.sel(**coords))
+
+    def shift(self, **steps: int) -> Bound:
+        return self._wrap(self._cell.shift(**steps))
+
+    def lag(self, dim: str, n: int = 1) -> Bound:
+        return self._wrap(self._cell.lag(dim, n))
+
+    def lead(self, dim: str, n: int = 1) -> Bound:
+        return self._wrap(self._cell.lead(dim, n))
+
+    @property
+    def coords(self) -> dict[str, str]:
+        """This cell's labels, e.g. {"period": "FY2027"}."""
+        return dict(self._at)
+
+    def attrs(self, dim: str) -> dict:
+        """The attrs of this cell's label along `dim`, e.g. x.attrs("period") -> {"kind": "forecast"}."""
+        if dim not in self._at:
+            raise DefinitionError(f"x has no {dim!r} label; this cell's dims are {', '.join(self._at)}")
+        return dict(self._model.dimensions[dim].attrs(self._at[dim]))
+
+    def is_nil(self) -> bool:
+        self._reads.append((self._cell, self._at))
+        return self._model._is_nil(self._cell, self._at)
+
+    # behaving as a number
+    def __add__(self, o): return float(self) + _num(o)
+    def __radd__(self, o): return _num(o) + float(self)
+    def __sub__(self, o): return float(self) - _num(o)
+    def __rsub__(self, o): return _num(o) - float(self)
+    def __mul__(self, o): return float(self) * _num(o)
+    def __rmul__(self, o): return _num(o) * float(self)
+    def __truediv__(self, o): return float(self) / _num(o)
+    def __rtruediv__(self, o): return _num(o) / float(self)
+    def __pow__(self, o): return float(self) ** _num(o)
+    def __rpow__(self, o): return _num(o) ** float(self)
+    def __neg__(self): return -float(self)
+    def __pos__(self): return float(self)
+    def __abs__(self): return abs(float(self))
+    def __round__(self, n=None): return round(float(self), n)
+    def __lt__(self, o): return float(self) < _num(o)
+    def __le__(self, o): return float(self) <= _num(o)
+    def __gt__(self, o): return float(self) > _num(o)
+    def __ge__(self, o): return float(self) >= _num(o)
+    def __eq__(self, o): return float(self) == _num(o)  # type: ignore[override]
+    def __ne__(self, o): return float(self) != _num(o)  # type: ignore[override]
+    def __bool__(self): return bool(float(self))
+    def __format__(self, spec): return format(float(self), spec)
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return f"<{self._cell!r} at {self._at}>"
+
+
+def _num(x: Any) -> float:
+    return float(x) if isinstance(x, Bound) else x
+
+
+class CellFunction:
+    """A formula kept as a Python function, called once per cell with `x` (a Bound)."""
+
+    def __init__(self, fn: Callable[..., Any], source: str | None = None, env: Mapping[str, Any] | None = None):
+        self.fn = fn
+        self._source, self._env = source, dict(env) if env is not None else None
+
+    @property
+    def source(self) -> str | None:
+        if self._source is None:
+            self._source = _function_source(self.fn)
+        return self._source
+
+    def __call__(self, x: Bound) -> Any:
+        return self.fn(x)
+
+    def __repr__(self) -> str:
+        return self.source or f"<function {self.fn.__name__}>"
+
+    # == saving ==
+    def to_data(self, model: Model) -> dict[str, Any]:
+        """{"python": source, "env": {name: value}}: the source plus the names it uses."""
+        if self.source is None:
+            raise DefinitionError(
+                f"can't save formula {self.fn!r}: its source isn't available "
+                "(was it typed at a plain python prompt or built with exec?)"
+            )
+        if self._env is not None:
+            env = self._env
+        else:
+            env = {}
+            cv = inspect.getclosurevars(self.fn)
+            for name, value in {**cv.globals, **cv.nonlocals}.items():
+                env[name] = _env_value(name, value, model, self.source)
+        return {"python": self.source, "env": env}
+
+    @classmethod
+    def from_data(cls, data: Mapping[str, Any], model: Model) -> CellFunction:
+        namespace: dict[str, Any] = {}
+        for name, value in data.get("env", {}).items():
+            namespace[name] = _env_restore(value, model)
+        exec(compile(f"__formula__ = ({data['python']})", "<tracemodel formula>", "exec"), namespace)  # noqa: S102
+        return cls(namespace["__formula__"], data["python"], data.get("env", {}))
+
+
+def _env_value(name: str, value: Any, model: Model, source: str) -> Any:
+    if value is model:
+        return {"$model": True}
+    if isinstance(value, types.ModuleType):
+        return {"$module": value.__name__}
+    if isinstance(value, Expr):
+        from .model import _text
+
+        return {"$expr": _text(value)}
+    if _is_json(value):
+        return value
+    raise DefinitionError(
+        f"can't save formula {source!r}: it uses {name!r} = {value!r}; a saved formula may use "
+        "numbers, strings, lists and dicts of them, expressions, modules and the model"
+    )
+
+
+def _env_restore(value: Any, model: Model) -> Any:
+    if isinstance(value, dict) and len(value) == 1:
+        (key, v), = value.items()
+        if key == "$model":
+            return model
+        if key == "$module":
+            return __import__(v)
+        if key == "$expr":
+            from .text import parse
+
+            return parse(v, model)
+    return value
+
+
+def _is_json(value: Any) -> bool:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_is_json(v) for v in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _is_json(v) for k, v in value.items())
+    return False
+
+
+def _function_source(fn: Callable[..., Any]) -> str | None:
+    """The text of a lambda (the lambda expression alone) or a def; None when unavailable."""
+    code = getattr(fn, "__code__", None)
+    if code is None:
+        return None
+    try:
+        filename = inspect.getsourcefile(fn) or code.co_filename
+    except TypeError:
+        return None
+    lines = linecache.getlines(filename)
+    if not lines:
+        return None
+    text = "".join(lines)
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    if fn.__name__ != "<lambda>":
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == fn.__name__ \
+                    and node.lineno <= code.co_firstlineno <= (node.end_lineno or node.lineno):
+                return None  # a def: kept as code, but not savable as one expression
+        return None
+    found = [n for n in ast.walk(tree) if isinstance(n, ast.Lambda) and n.lineno == code.co_firstlineno]
+    if len(found) > 1:  # several lambdas on one line: the one whose code matches
+        def same(node: ast.Lambda) -> bool:
+            try:
+                compiled = compile(ast.Expression(node), filename, "eval")
+            except (SyntaxError, ValueError):
+                return False
+            inner = next((c for c in compiled.co_consts if isinstance(c, types.CodeType)), None)
+            return inner is not None and inner.co_code == code.co_code
+        found = [n for n in found if same(n)]
+    if len(found) != 1:
+        return None
+    return ast.get_source_segment(text, found[0])
+
+
+def compile_formula(fn: Callable[..., Any], model: Model, item: Item) -> Expr | CellFunction:
+    """An expression when `fn` only uses the expression grammar, else a CellFunction."""
+    try:
+        result = fn(Here(model, item))
+    except Exception:  # noqa: BLE001 - max(), if/else, math, ...: not an expression; run it per cell
+        return CellFunction(fn)
+    if isinstance(result, Expr) and not isinstance(result, Here):
+        return result
+    if isinstance(result, Here):  # lambda x: x  (a cell of the item itself, or another item)
+        return result
+    return CellFunction(fn)
+
+
+def run(fn: CellFunction, model: Model, item: Item, full: Mapping[str, str], reads: list) -> Any:
+    """Call a function formula for one cell; numbers, expressions or None (missing) come back."""
+    result = fn(Bound(model, Cell(model, item), full, reads))
+    if isinstance(result, Bound):
+        return float(result)
+    if isinstance(result, Expr):
+        return result.evaluate(lambda c, a: _track(model, reads, c, a), full)
+    if result is None or isinstance(result, (int, float)) and not isinstance(result, bool):
+        return result
+    from .values import NIL
+
+    if result is NIL:
+        return result
+    raise DefinitionError(f"formula {fn!r} returned {result!r} for {item.name} {dict(full)}; it must return a number")
+
+
+def _track(model: Model, reads: list, cell: Cell, at: Mapping[str, str]) -> float:
+    reads.append((cell, dict(at)))
+    return model._lookup(cell, at)
+
+
+# == value checks: expect=lambda x: 0 <= x["margin"] <= 1 =====================
+
+def _check_item(model: Model, key: str) -> Cell:
+    if key not in model.items:
+        raise DefinitionError(f"x[{key!r}]: no item {key!r}; in a check, x reads items, e.g. x[\"revenue\"]")
+    return model[key]
+
+
+class _CheckHere:
+    """The symbolic `x` a value check is first called with."""
+
+    def __init__(self, model: Model):
+        self._model = model
+
+    def __getitem__(self, key: str) -> Cell:
+        return _check_item(self._model, key)
+
+
+class CheckX:
+    """`x` in a value check: x["item"] reads an item at the run's coords, as a number."""
+
+    __slots__ = ("_at", "_model", "_reads")
+
+    def __init__(self, model: Model, at: Mapping[str, str], reads: list):
+        self._model, self._at, self._reads = model, dict(at), reads
+
+    def __getitem__(self, key: str) -> Bound:
+        return Bound(self._model, _check_item(self._model, key), self._at, self._reads)
+
+    @property
+    def coords(self) -> dict[str, str]:
+        """This run's labels, e.g. {"period": "FY2027"}."""
+        return dict(self._at)
+
+    def attrs(self, dim: str) -> dict:
+        """The attrs of this run's label along `dim`."""
+        if dim not in self._at:
+            raise DefinitionError(f"x has no {dim!r} label; this run's dims are {', '.join(self._at)}")
+        return dict(self._model.dimensions[dim].attrs(self._at[dim]))
+
+
+def compile_check(fn: Callable[..., Any], model: Model) -> Condition | CellFunction:
+    """A condition when `fn` only uses the expression grammar, else a CellFunction run per check run."""
+    try:
+        result = fn(_CheckHere(model))
+    except Exception:  # noqa: BLE001 - and, or, chained comparisons, max, if/else, x.coords: run with numbers
+        return CellFunction(fn)
+    return result if isinstance(result, Condition) else CellFunction(fn)
+
+
+__all__ = ["Bound", "CellFunction", "CheckX", "Here", "compile_check", "compile_formula", "run"]

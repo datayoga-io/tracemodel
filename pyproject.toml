@@ -1,0 +1,42 @@
+[project]
+name = "tracemodel"
+version = "0.1.0"
+description = "Traced, checked financial models in Python: every number has an address, a source and rules that check it."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "DataYoga", email = "oren@datayoga.io" }
+]
+requires-python = ">=3.12"
+dependencies = []
+keywords = ["financial modeling", "data quality", "xbrl", "ai agents", "three-statement model"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/datayoga-io/tracemodel"
+Repository = "https://github.com/datayoga-io/tracemodel"
+Issues = "https://github.com/datayoga-io/tracemodel/issues"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "ipython>=9.17.1",
+    "jupyterlab>=4.6.4",
+    "pytest>=9.1.1",
+]
+
+[tool.ruff]
+line-length = 120
