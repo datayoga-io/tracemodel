@@ -1220,3 +1220,35 @@ def test_item_names_must_be_identifiers():
     m = _quarters()
     with pytest.raises(tm.DefinitionError, match="'net_sales'"):
         m.add_item("net sales", ["period"])
+
+
+def test_saved_function_formula_restores_modules_the_model_and_expressions(tmp_path):
+    import math
+
+    m = _quarters()
+    model, base = m, m["rev"]
+    m.add_item("logged", ["period"], formula=lambda x: math.log(max(x["rev"], 1)))
+    m.add_item("via_model", ["period"], formula=lambda x: max(model.get("rev", **x.coords), 0))
+    m.add_item("via_expr", ["period"], formula=lambda x: max(x[base.item.name], 0) + 1)
+    m.save(tmp_path / "m.json")
+    env = {i["name"]: i["formula"]["env"] for i in json.loads((tmp_path / "m.json").read_text())["items"]
+           if isinstance(i.get("formula"), dict)}
+    assert env["logged"] == {"math": {"$module": "math"}}
+    assert env["via_model"] == {"model": {"$model": True}}
+    assert env["via_expr"] == {"base": {"$expr": "rev"}}
+    loaded = tm.load(tmp_path / "m.json", allow_code=True)
+    loaded.set_value("rev", {"period": "Q2"}, 110, SO)
+    assert loaded.get("logged", period="Q2") == pytest.approx(math.log(110))
+    assert loaded.get("via_model", period="Q2") == 110
+    assert loaded.get("via_expr", period="Q2") == 111
+
+
+def test_two_function_formulas_on_one_line_each_save_their_own_source(tmp_path):
+    m = _quarters()
+    up, down = (lambda x: max(x["rev"], 0) + 1), (lambda x: max(x["rev"], 0) - 1)
+    m.add_item("up", ["period"], formula=up)
+    m.add_item("down", ["period"], formula=down)
+    m.save(tmp_path / "m.json")
+    loaded = tm.load(tmp_path / "m.json", allow_code=True)
+    loaded.set_value("rev", {"period": "Q1"}, 100, SO)
+    assert [loaded.get("up", period="Q1"), loaded.get("down", period="Q1")] == [101, 99]
