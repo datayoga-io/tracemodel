@@ -52,7 +52,7 @@ fi
 cd "$SANDBOX"
 uv init --app --no-readme --no-workspace --vcs none --name sandbox -q
 rm -f hello.py main.py
-uv add -q --refresh-package tracemodel ./wheels/tracemodel-*.whl  # don't reuse a cached older build
+uv add -q --refresh-package pytracemodel ./wheels/pytracemodel-*.whl  # don't reuse a cached older build
 
 read -r -d '' DEFINE_TASK <<'EOF' || true
 Work in this directory only: do not read local files outside it. Use the web freely.

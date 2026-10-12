@@ -45,6 +45,10 @@ model keeps them consistent, and each value traces back to its source.
 
 Python 3.12 or later. No dependencies.
 
+```bash
+pip install pytracemodel
+```
+
 ```python
 import tracemodel as tm
 ```

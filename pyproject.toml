@@ -1,5 +1,5 @@
 [project]
-name = "tracemodel"
+name = "pytracemodel"
 version = "0.1.0"
 description = "Traced, checked financial models in Python: every number has an address, a source and rules that check it."
 readme = "README.md"
@@ -30,6 +30,9 @@ Issues = "https://github.com/datayoga-io/tracemodel/issues"
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tracemodel"]  # installed as pytracemodel, imported as tracemodel
 
 [dependency-groups]
 dev = [

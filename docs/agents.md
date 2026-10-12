@@ -39,7 +39,7 @@ cp README.md $SANDBOX/
 cd $SANDBOX
 uv init --app --no-readme --no-workspace --vcs none --name sandbox -q
 rm -f main.py hello.py
-uv add ./wheels/tracemodel-*.whl
+uv add ./wheels/pytracemodel-*.whl
 ```
 
 - The library goes in as a built wheel, so the agent isn't pointed at the source, the tests or
