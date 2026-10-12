@@ -1125,3 +1125,98 @@ def test_value_check_save_and_load_needs_allow_code(tmp_path):
     assert [r.passed for r in loaded.check().results] == [True, False, True]
     loaded.add_coords("period", [("FY2027", None, {"kind": "forecast"})])   # re-expands without the code
     assert len(loaded.checks["MARGIN"].runs()) == 4
+
+
+# -- review fixes -------------------------------------------------------------
+
+def _quarters():
+    m = tm.Model()
+    m.add_dimension("period", ["Q1", "Q2", "Q3"])
+    m.add_item("rev", ["period"])
+    for p, v in [("Q1", 100), ("Q2", 110), ("Q3", 120)]:
+        m.set_value("rev", {"period": p}, v, SO)
+    return m
+
+
+def test_check_run_that_cant_be_calculated_fails_instead_of_raising():
+    m = _quarters()
+    m.add_item("growth", ["period"], formula=m["rev"] / m["rev"].lag("period") - 1)
+    m.add_item("thirds", ["period"], dtype=int, formula=m["rev"] / 3)
+    m.add_check("G", coords={"period": tm.ANY}, expect=m["growth"] < 1)
+    m.add_check("T", coords={"period": ["Q2"]}, expect=m["thirds"] > 0)
+    report = m.check()
+    assert [r.passed for r in report.filter(check="G").results] == [False, True, True]
+    assert "OutOfRange" in report.filter(check="G").results[0].error
+    assert "DefinitionError" in report.filter(check="T").results[0].error
+
+
+def test_function_formula_branching_on_labels_or_cells_runs_per_cell():
+    m = _quarters()
+    m.add_item("flag", ["period"])
+    for p, v in [("Q1", 0), ("Q2", 1), ("Q3", 1)]:
+        m.set_value("flag", {"period": p}, v, SO)
+    m.add_item("q3_double", ["period"],
+               formula=lambda x: x["rev"] * 2 if x.coords["period"] == "Q3" else x["rev"])
+    m.add_item("flagged", ["period"], formula=lambda x: x["rev"] if x["flag"] else 0)
+    assert [m.get("q3_double", period=p) for p in ["Q1", "Q3"]] == [100, 240]
+    assert [m.get("flagged", period=p) for p in ["Q1", "Q2"]] == [0, 110]
+    with pytest.raises(tm.DefinitionError, match="no single truth value"):
+        bool(m["rev"])
+
+
+def test_value_check_branching_on_a_cell_runs_with_numbers():
+    m = _quarters()
+    m.set_value("rev", {"period": "Q1"}, 0, SO)
+    m.add_check("C", coords={"period": tm.ANY}, expect=lambda x: x["rev"] > 105 if x["rev"] else True)
+    assert [r.passed for r in m.check().results] == [True, True, True]   # Q1 is 0: no test
+
+
+def test_readding_an_item_with_an_edited_def_formula_raises():
+    m = _quarters()
+
+    def f(x):
+        return max(x["rev"], 0)
+    m.add_item("d", ["period"], formula=f)
+    m.add_item("d", ["period"], formula=f)   # the same function again is fine
+
+    def f(x):
+        return max(x["rev"], 0) * 100
+    with pytest.raises(tm.DefinitionError, match="different formula"):
+        m.add_item("d", ["period"], formula=f)
+
+
+def test_saved_formula_that_doesnt_parse_raises_at_load():
+    m = _quarters()
+    m.add_item("double", ["period"], formula=m["rev"] * 2)
+    data = m.to_dict()
+    next(i for i in data["items"] if i["name"] == "double")["formula"] = "rev ** 2"
+    with pytest.raises(tm.DefinitionError):
+        tm.Model.from_dict(data)
+
+
+def test_function_formula_default_values_save_and_load(tmp_path):
+    m = _quarters()
+    for k in [2]:
+        m.add_item("scaled", ["period"], formula=lambda x, k=k: max(x["rev"], 0) * k)
+    m.save(tmp_path / "m.json")
+    loaded = tm.load(tmp_path / "m.json", allow_code=True)
+    loaded.set_value("rev", {"period": "Q1"}, 5, SO)
+    assert loaded.get("scaled", period="Q1") == 10
+
+
+def test_to_jsonl_leaves_the_file_alone_when_a_row_cant_be_saved(tmp_path):
+    m = _quarters()
+    path = tmp_path / "v.jsonl"
+    m.to_jsonl(path)
+    before = path.read_text()
+    code = "m.set_value('rev', {'period': 'Q1'}, lambda x: max(x.lag('period'), 0), SO)"
+    exec(code, {"m": m, "SO": SO})  # noqa: S102 - built with exec, it has no source text to save
+    with pytest.raises(tm.DefinitionError, match="source"):
+        m.to_jsonl(path)
+    assert path.read_text() == before
+
+
+def test_item_names_must_be_identifiers():
+    m = _quarters()
+    with pytest.raises(tm.DefinitionError, match="'net_sales'"):
+        m.add_item("net sales", ["period"])

@@ -69,6 +69,12 @@ class Expr(_Shows):
     def evaluate(self, lookup: Lookup, at: Mapping[str, str]) -> float:
         raise NotImplementedError
 
+    def __bool__(self) -> bool:
+        raise DefinitionError(
+            f"{self!r} has no single truth value: it is a value for each coord. Compare it, e.g. "
+            f"{self!r} > 0, or in a formula written as a function, branch on x[...] (a number)"
+        )
+
     def __add__(self, other: Any) -> Expr:
         return BinOp("+", self, _wrap(other))
 

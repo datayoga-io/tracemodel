@@ -9,6 +9,7 @@ import inspect
 import itertools
 import json
 import keyword
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -274,6 +275,8 @@ class Model:
         being calculated: lambda x: max(0, 25_000 - x["cash"]); x["item"] reads another item at
         the same coords, x.lag("period") this item's previous period.
         """
+        if not isinstance(name, str) or not name.isidentifier() or keyword.iskeyword(name) or name == "abs":
+            raise DefinitionError(f"item name {name!r} must be a Python identifier, e.g. {_identifier(name)!r}")
         dims = tuple(dims)
         if len(set(dims)) != len(dims):
             raise DefinitionError(f"item {name!r} repeats a dim")
@@ -299,7 +302,7 @@ class Model:
             if formula is not None and not isinstance(formula, CellFunction):
                 self._check_formula(f"item {name!r}: formula", dims, formula)
             if old is not None:
-                if repr(old.formula) == repr(formula):
+                if _same_formula(old.formula, formula):
                     return old
                 raise DefinitionError(f"item {name!r} already exists with a different formula")
             self.items[name] = item = Item(name, dims, dtype, dict(attrs or {}), formula)
@@ -464,11 +467,14 @@ class Model:
             return self._run_value_check(check, at)
         cond = check.condition(at)
         reads: list[CellRead] = []
-        self._reads(cond.cells(), at, reads)
-        if any(r.value is None for r in reads):
-            return CheckResult(check, at, None, None, False, reads, cond)  # missing never counts as 0
-        lhs, rhs = self._sides(cond, at)
-        return CheckResult(check, at, lhs, rhs, self._test(cond, at) is True, reads, cond)
+        try:
+            self._reads(cond.cells(), at, reads)
+            if any(r.value is None for r in reads):
+                return CheckResult(check, at, None, None, False, reads, cond)  # missing never counts as 0
+            lhs, rhs = self._sides(cond, at)
+            return CheckResult(check, at, lhs, rhs, self._test(cond, at) is True, reads, cond)
+        except Exception as e:  # noqa: BLE001 - a cell this run reads can't be calculated: fail the run
+            return CheckResult(check, at, None, None, False, reads, cond, f"{type(e).__name__}: {e}")
 
     def _run_value_check(self, check: Check, at: dict[str, str]) -> CheckResult:
         """Call the function with this run's numbers; a missing cell, an error or a non-bool fails."""
@@ -671,6 +677,9 @@ class Model:
             else:
                 formula = (lambda own, text=text: parse(text, model)) if text else None  # after the item exists
             model.add_item(i["name"], i["dims"], i["dtype"], i.get("attrs"), formula=formula)
+            if isinstance(text, str) and isinstance(model.items[i["name"]].formula, CellFunction):
+                parse(text, model)  # it didn't parse: raise its error
+                raise DefinitionError(f"item {i['name']!r}: formula {text!r} is not an expression")
         for c in data["checks"]:
             specs = {dim: _spec_from_data(spec) for dim, spec in c.get("coords", {}).items()}
             for dim in specs:
@@ -693,14 +702,15 @@ class Model:
 
     def to_jsonl(self, path: str | Path) -> None:
         """Write one JSON object per value."""
-        with open(path, "w") as f:
-            for e in self._entries.values():
-                row = e.to_json()
-                if _is_formula(e.value):  # a cell formula: text, or a function's source
-                    del row["value"]
-                    row = {"line_item": row["line_item"], "coords": row["coords"],
-                           "formula": _formula_data(e.value, self)} | row
-                f.write(json.dumps(row) + "\n")
+        lines = []
+        for e in self._entries.values():
+            row = e.to_json()
+            if _is_formula(e.value):  # a cell formula: text, or a function's source
+                del row["value"]
+                row = {"line_item": row["line_item"], "coords": row["coords"],
+                       "formula": _formula_data(e.value, self)} | row
+            lines.append(json.dumps(row) + "\n")
+        Path(path).write_text("".join(lines))  # written only once every row could be saved
 
     def load_jsonl(self, path: str | Path, allow_code: bool = False) -> None:
         """Add the values in a JSON lines file, each validated like set_value.
@@ -942,6 +952,12 @@ def _whole(value: float, item: Item, formula: object, full: Mapping[str, str]) -
     )
 
 
+def _same_formula(a: object, b: object) -> bool:
+    if isinstance(a, CellFunction) and isinstance(b, CellFunction):
+        return a.fn is b.fn or (a.fn.__code__ == b.fn.__code__ and a.source == b.source)
+    return repr(a) == repr(b)
+
+
 def _is_formula(value: object) -> bool:
     return isinstance(value, (Expr, CellFunction))
 
@@ -1099,6 +1115,13 @@ def _check_data(check: Check, model: Model) -> dict[str, Any]:
     else:
         data["expect"] = _text(check.expect)  # type: ignore[arg-type]
     return data
+
+
+def _identifier(name: object) -> str:
+    text = re.sub(r"\W+", "_", str(name)).strip("_") or "item"
+    if not text.isidentifier():  # starts with a digit
+        text = f"item_{text}"
+    return f"{text}_" if keyword.iskeyword(text) or text == "abs" else text
 
 
 def _text(expr: Expr | Condition) -> str:

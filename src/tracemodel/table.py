@@ -72,8 +72,6 @@ def _right(rows: list[list[Any]], i: int) -> bool:
 def _fmt(v: Any) -> str:
     if v is None:
         return ""
-    if type(v).__name__ == "_Nil":
-        return "—"
     if isinstance(v, bool):
         return str(v)
     if isinstance(v, int):

@@ -10,6 +10,9 @@ Build a model in four steps, in order:
     model.check()
 """
 
+import json
+from pathlib import Path
+
 from .dimensions import Dimension, Hierarchy
 from .errors import (
     DefinitionError,
@@ -25,14 +28,11 @@ from .table import Table
 from .values import NIL, Entry, Report
 
 
-def load(path, allow_code=False):
+def load(path: str | Path, allow_code: bool = False) -> Model:
     """A model from a definition file written by `model.save(path)`.
 
     Formulas saved as Python functions are code; loading them needs allow_code=True.
     """
-    import json
-    from pathlib import Path
-
     return Model.from_dict(json.loads(Path(path).read_text()), allow_code=allow_code)
 
 

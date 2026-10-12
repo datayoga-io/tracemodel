@@ -158,10 +158,10 @@ model = tm.Model()
 
 | Call | Does |
 | --- | --- |
-| `set_value(item, coords, value, source)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers), or `tm.NIL` (see below), or an expression: a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
-| `get(item, **coords)` | The number at full coords (0 for a nil cell). |
-| `entry(item, **coords)` | With full coords: an `Entry` (`value`, `source`, `history`). With fewer coords: a `Table` of matching entries. |
-| `table(item)` | The item as a grid: `period` across (if the item has it), other dims down. Cells not entered are blank; nil cells show `—`. |
+| `set_value(line_item, coords, value, source)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers), or `tm.NIL` (see below), or an expression: a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
+| `get(line_item, **coords)` | The number at full coords (0 for a nil cell). |
+| `entry(line_item, **coords)` | With full coords: an `Entry` (`value`, `source`, `history`). With fewer coords: a `Table` of matching entries. |
+| `table(line_item)` | The item as a grid: `period` across (if the item has it), other dims down. Cells not entered are blank; nil cells show `—`. |
 | `evaluate(expr)` | Evaluates an expression for every combination of its open dims: a `Table`, or a number when no dim is open. |
 | `check()` | Runs every check; returns a `Report`. |
 | `transaction()` | Groups changes; see Transactions. |
@@ -173,7 +173,7 @@ model = tm.Model()
 | --- | --- |
 | `save(path)` | Writes the definition (dimensions, items, formulas, checks) to a JSON file. Values are not included; save them with `to_jsonl`. |
 | `tm.load(path, allow_code=False)` | A model from a file written by `save`. Formulas saved as Python functions are code: they load only with `allow_code=True`. |
-| `to_dict()` / `tm.Model.from_dict(data)` | The same, as plain data. |
+| `to_dict()` / `tm.Model.from_dict(data, allow_code=False)` | The same, as plain data. |
 
 **Source.** Every value needs a `source` dict with `document`, `url` and `section`;
 `page` and `quote` are optional. Other keys are rejected.
@@ -350,6 +350,7 @@ value (`lambda region, h=regions: ...`) are not dimensions; use them to bind val
 - `Report`: `ok` (no failing error check), `filter(check=None, **coords)` (the runs of one check and/or on some labels: a label, a list, `tm.ANY` or `tm.filter_by_attrs(...)`; returns a `Report`), `results`, `failures` (every run that didn't pass), `errors` and `warnings` (failures by severity), `explain(check_id=None)` (each run with every cell it read), `table()`, `show()`.
 - Each result: `check`, `at` (the coords of the run), `lhs`, `rhs`, `diff`, `passed`, `cells`, `missing`, `error`.
 - For a value check, `lhs`, `rhs` and `diff` are `None`. `error` holds the error text when the function raised or didn't return a bool.
+- A run fails with `error` set, instead of `check()` raising, when a cell it reads can't be calculated: say a formula's `lag` before the first period, or an `int` formula that gives a fraction.
 - A missing value fails the check that reads it; it is never treated as 0.
 - Each run's result: `pass`, `FAIL`, `missing`, or for a warning check `warn` / `warn: missing`.
 - `Table`: `columns`, `rows`, `title`, `to_records()`, `show()`. Renders as HTML in Jupyter and as aligned text elsewhere.
@@ -588,7 +589,7 @@ model.load_jsonl("retail.values.jsonl")
   anyone is safe to load.
 - A function check is saved as the condition it built for each label (`expect_by_label`); the
   function itself isn't needed again. `tm.ANY` is saved as `"ANY"`.
-- Item names used in expressions must be Python identifiers, and attrs must hold JSON values.
+- Item names must be Python identifiers (`add_item` checks), and attrs must hold JSON values.
 - Loading validates everything, as building the model in code does.
 - A formula written as a Python function is saved as `{"python": "<source>", "env": {...}}`;
   loading it runs it, so it needs `allow_code=True`.

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Run a Claude Code agent that sees only README.md and the installed tracemodel library: one that
 # defines a model, one that enters its values, or one that forecasts. See docs/agents.md.
+# The sandbox directory limits what the agent sees, not what it can do: `uv run` runs any Python
+# as you. Run this inside a container or VM.
 #
 # Usage: scripts/modeler_agent.sh [define|enter|forecast] [sandbox-dir]
 #   define   (default) define Apple's model from the 10-K and save it; sandbox ~/tracemodel-sandbox

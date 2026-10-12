@@ -26,7 +26,10 @@ headless with `claude -p`. Any agent that can run Python and read the web works 
 
 ## 1. Give each agent a sandbox
 
-Each agent works in its own directory. It holds the library and the README, and nothing else:
+Each agent works in its own directory. It holds the library and the README, and nothing else.
+The directory decides what the agent sees, not what it can do: `uv run` runs any Python as your
+user, and the file tools aren't limited to the directory. The agent reads the web, so a page can
+try to steer it. Run it in a container or a VM, or turn on Claude Code's sandboxed Bash.
 
 ```bash
 SANDBOX=~/tracemodel-sandbox
@@ -39,8 +42,8 @@ rm -f main.py hello.py
 uv add ./wheels/tracemodel-*.whl
 ```
 
-- The library goes in as a built wheel, so the agent has no path back to the source, the tests
-  or the examples.
+- The library goes in as a built wheel, so the agent isn't pointed at the source, the tests or
+  the examples.
 - The README is the only documentation. If the agent gets something wrong, the README is what
   to fix.
 
@@ -63,7 +66,7 @@ claude -p "$MODEL_TASK" \
 | `--setting-sources project,local` | Skips your user settings: plugins, hooks and preferences. |
 | `--strict-mcp-config` | No MCP servers or connectors. |
 | `--permission-mode dontAsk` | Any tool not in `--allowedTools` is denied, not prompted. |
-| `--allowedTools ...` | Files in the sandbox, Python through `uv run`, and the web. |
+| `--allowedTools ...` | File tools, any Python through `uv run`, and the web. |
 | `--disallowedTools "Agent"` | No sub-agents. |
 
 The task, `$MODEL_TASK`:
@@ -197,6 +200,9 @@ print(f"{sum(x.passed for x in r.results)}/{len(r.results)} check runs pass; ok=
 
 - Loading `values.jsonl` validates every value against the definition, in one transaction: a bad
   row loads nothing.
+- If the definition or the values hold formulas written as Python functions, `tm.load` and
+  `load_jsonl` refuse them until you pass `allow_code=True`, which runs that code. Do that inside
+  the agent's sandbox, since an agent wrote it.
 - `report.failures` lists the runs that didn't pass, and `report.explain()` shows the cells each
   one read.
 

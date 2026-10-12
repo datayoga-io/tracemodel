@@ -156,6 +156,7 @@ class CellFunction:
             cv = inspect.getclosurevars(self.fn)
             for name, value in {**cv.globals, **cv.nonlocals}.items():
                 env[name] = _env_value(name, value, model, self.source)
+            env |= _default_names(self.fn, self.source, model)
         return {"python": self.source, "env": env}
 
     @classmethod
@@ -165,6 +166,25 @@ class CellFunction:
             namespace[name] = _env_restore(value, model)
         exec(compile(f"__formula__ = ({data['python']})", "<tracemodel formula>", "exec"), namespace)  # noqa: S102
         return cls(namespace["__formula__"], data["python"], data.get("env", {}))
+
+
+def _default_names(fn: Callable[..., Any], source: str, model: Model) -> dict[str, Any]:
+    """lambda x, k=k: ...: the default is evaluated where the lambda is written, so save k's value."""
+    args = ast.parse(source, mode="eval").body.args  # type: ignore[attr-defined]
+    kwdefaults = getattr(fn, "__kwdefaults__", None) or {}
+    pairs = [*zip(args.defaults, getattr(fn, "__defaults__", None) or ()),
+             *((d, kwdefaults[a.arg]) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None)]
+    env = {}
+    for node, value in pairs:
+        if isinstance(node, ast.Constant):
+            continue
+        if not isinstance(node, ast.Name):
+            raise DefinitionError(
+                f"can't save formula {source!r}: a default value must be a constant or a name (k=k), "
+                f"not {ast.unparse(node)!r}"
+            )
+        env[node.id] = _env_value(node.id, value, model, source)
+    return env
 
 
 def _env_value(name: str, value: Any, model: Model, source: str) -> Any:
@@ -226,11 +246,7 @@ def _function_source(fn: Callable[..., Any]) -> str | None:
     except SyntaxError:
         return None
     if fn.__name__ != "<lambda>":
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == fn.__name__ \
-                    and node.lineno <= code.co_firstlineno <= (node.end_lineno or node.lineno):
-                return None  # a def: kept as code, but not savable as one expression
-        return None
+        return None  # a def: kept as code, but not savable as one expression
     found = [n for n in ast.walk(tree) if isinstance(n, ast.Lambda) and n.lineno == code.co_firstlineno]
     if len(found) > 1:  # several lambdas on one line: the one whose code matches
         def same(node: ast.Lambda) -> bool:
@@ -246,17 +262,22 @@ def _function_source(fn: Callable[..., Any]) -> str | None:
     return ast.get_source_segment(text, found[0])
 
 
+def _reads_labels(code: types.CodeType) -> bool:
+    """Does the function (or a comprehension in it) use x.coords or x.attrs(...)?"""
+    return bool({"coords", "attrs"} & set(code.co_names)) or any(
+        _reads_labels(c) for c in code.co_consts if isinstance(c, types.CodeType))
+
+
 def compile_formula(fn: Callable[..., Any], model: Model, item: Item) -> Expr | CellFunction:
     """An expression when `fn` only uses the expression grammar, else a CellFunction."""
+    code = getattr(fn, "__code__", None)
+    if code is not None and _reads_labels(code):  # the symbolic x has no labels to branch on
+        return CellFunction(fn)
     try:
         result = fn(Here(model, item))
     except Exception:  # noqa: BLE001 - max(), if/else, math, ...: not an expression; run it per cell
         return CellFunction(fn)
-    if isinstance(result, Expr) and not isinstance(result, Here):
-        return result
-    if isinstance(result, Here):  # lambda x: x  (a cell of the item itself, or another item)
-        return result
-    return CellFunction(fn)
+    return result if isinstance(result, Expr) else CellFunction(fn)  # an Expr, or x itself (a Here)
 
 
 def run(fn: CellFunction, model: Model, item: Item, full: Mapping[str, str], reads: list) -> Any:
