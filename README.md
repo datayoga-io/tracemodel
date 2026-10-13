@@ -43,10 +43,11 @@ model keeps them consistent, and each value traces back to its source.
 
 ## Install
 
-Python 3.12 or later. No dependencies.
+Python 3.12 or later. No dependencies; the Excel export needs openpyxl.
 
 ```bash
 pip install pytracemodel
+pip install "pytracemodel[excel]"    # with model.to_excel
 ```
 
 ```python
@@ -170,6 +171,7 @@ model = tm.Model()
 | `check()` | Runs every check; returns a `Report`. |
 | `transaction()` | Groups changes; see Transactions. |
 | `to_jsonl(path)` / `load_jsonl(path)` | Save / load values, one JSON object per value. Loading validates like `set_value`, in one transaction: a bad row loads nothing. |
+| `to_excel(path, *, title="Model", sections=None, layout="sheet", columns=None, split_after=None, page_breaks=True)` | Writes the model as an Excel workbook; see Excel export. |
 
 **Saving the definition**
 
@@ -658,6 +660,39 @@ model.load_jsonl("retail.values.jsonl")
 - Loading validates everything, as building the model in code does.
 - A formula written as a Python function is saved as `{"python": "<source>", "env": {...}}`;
   loading it runs it, so it needs `allow_code=True`.
+
+## Excel export
+
+`model.to_excel(path)` writes the model for people who read models in Excel (needs
+`pip install "pytracemodel[excel]"`):
+
+```python
+model.to_excel("apple.xlsx", title="Apple FY2024-FY2025 (Form 10-K)", sections={
+    "Income statement": ["net_sales", "cost_of_sales", "gross_margin", "operating_expenses", "net_income"],
+    "Balance sheet": ["balance_sheet"],
+    "Cash flow": ["cash_flow"],
+})
+```
+
+- **Grids.** Items are blocks one under the other, sharing the columns: `columns`, else
+  `period`, else each item's last dim that isn't a hierarchy. A block's title is the item's
+  `description` (else its name in words); its rows are its other dims, hierarchies indented
+  and grouped so they collapse. Items with only hierarchy dims go across instead, one column
+  each.
+- **Sections** group items, e.g. a statement each; items in no section group by their dims.
+  With `layout="sheet"` the sections that share the columns go on one sheet, one after the
+  other, each under a banner and, with `page_breaks`, on its own printed page; with
+  `layout="sheets"` each section has its own sheet.
+- **Cells** follow the modelling convention: blue is entered, black is calculated; a yellow
+  fill is a value entered over a formula, a red fill a cell a failing check reads or found
+  missing. Nil shows as `—`; a cell with no value is blank. Each cell's note gives its source,
+  or its formula. `split_after=("month", "2026-03")` draws a line after a column, e.g.
+  between actuals and forecast.
+- **Tables** follow the grids: Dimensions, Items, Checks, Check results, and Values, every
+  entered value with its source and a link to it. A Summary sheet comes first, with the check
+  status, a legend and links.
+
+The workbook is a report: it holds values, not Excel formulas, and isn't read back.
 
 ## Values file format
 
