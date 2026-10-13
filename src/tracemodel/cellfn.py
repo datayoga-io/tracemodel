@@ -13,8 +13,10 @@ import inspect
 import linecache
 import types
 from collections.abc import Callable, Mapping
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from . import dates
 from .errors import DefinitionError
 from .expr import Cell, Condition, Expr
 
@@ -38,7 +40,8 @@ class Here(Cell):
 
 
 class Bound:
-    """`x` for one cell: behaves as that cell's number; x["item"], .lag() etc. read others."""
+    """`x` for one cell: behaves as that cell's value (a number, or a date for a date item);
+    x["item"], .lag() etc. read others."""
 
     __slots__ = ("_at", "_cell", "_model", "_reads")
 
@@ -48,7 +51,8 @@ class Bound:
     def _wrap(self, cell: Cell) -> Bound:
         return Bound(self._model, cell, self._at, self._reads)
 
-    def __float__(self) -> float:
+    def _get(self) -> Any:
+        """The cell's value, read (and traced) now."""
         open_dims = [d for d in self._cell.free_dims() if d not in self._at]
         if open_dims:
             raise DefinitionError(
@@ -56,7 +60,21 @@ class Bound:
                 f"pick a label, e.g. x[{self._cell.item.name!r}].sel({open_dims[0]}=...)"
             )
         self._reads.append((self._cell, self._at))
-        return float(self._model._lookup(self._cell, self._at))
+        return self._model._lookup(self._cell, self._at)
+
+    def __float__(self) -> float:
+        value = self._get()
+        if dates.kind(value) != "number":
+            raise TypeError(f"{self._cell!r} is a {dates.kind(value)}, not a number")
+        return float(value)
+
+    @property
+    def dt(self) -> dates.DatetimeAccessor:
+        """Fields of a date cell, as pandas' Series.dt: x["start"].dt.month, .dt.to_period("M")."""
+        value = self._get()
+        if not isinstance(value, date):
+            raise DefinitionError(f"{self._cell!r}.dt: .dt is for date and datetime items; it is a {dates.kind(value)}")
+        return dates.DatetimeAccessor(value)
 
     # reading other cells
     def __getitem__(self, key: str) -> Bound:
@@ -89,37 +107,45 @@ class Bound:
         self._reads.append((self._cell, self._at))
         return self._model._is_nil(self._cell, self._at)
 
-    # behaving as a number
-    def __add__(self, o): return float(self) + _num(o)
-    def __radd__(self, o): return _num(o) + float(self)
-    def __sub__(self, o): return float(self) - _num(o)
-    def __rsub__(self, o): return _num(o) - float(self)
-    def __mul__(self, o): return float(self) * _num(o)
-    def __rmul__(self, o): return _num(o) * float(self)
-    def __truediv__(self, o): return float(self) / _num(o)
-    def __rtruediv__(self, o): return _num(o) / float(self)
-    def __pow__(self, o): return float(self) ** _num(o)
-    def __rpow__(self, o): return _num(o) ** float(self)
-    def __neg__(self): return -float(self)
-    def __pos__(self): return float(self)
-    def __abs__(self): return abs(float(self))
-    def __round__(self, n=None): return round(float(self), n)
-    def __lt__(self, o): return float(self) < _num(o)
-    def __le__(self, o): return float(self) <= _num(o)
-    def __gt__(self, o): return float(self) > _num(o)
-    def __ge__(self, o): return float(self) >= _num(o)
-    def __eq__(self, o): return float(self) == _num(o)  # type: ignore[override]
-    def __ne__(self, o): return float(self) != _num(o)  # type: ignore[override]
-    def __bool__(self): return bool(float(self))
-    def __format__(self, spec): return format(float(self), spec)
+    # behaving as its value: a number, or a date (date - date is a timedelta, as in pandas)
+    def __add__(self, o): return self._get() + _num(o)
+    def __radd__(self, o): return _num(o) + self._get()
+    def __sub__(self, o): return self._get() - _num(o)
+    def __rsub__(self, o): return _num(o) - self._get()
+    def __mul__(self, o): return self._get() * _num(o)
+    def __rmul__(self, o): return _num(o) * self._get()
+    def __truediv__(self, o): return self._get() / _num(o)
+    def __rtruediv__(self, o): return _num(o) / self._get()
+    def __pow__(self, o): return self._get() ** _num(o)
+    def __rpow__(self, o): return _num(o) ** self._get()
+    def __neg__(self): return -self._get()
+    def __pos__(self): return +self._get()
+    def __abs__(self): return abs(self._get())
+    def __round__(self, n=None): return round(self._get(), n)
+    def __lt__(self, o): v = self._get(); return v < _other(v, o)
+    def __le__(self, o): v = self._get(); return v <= _other(v, o)
+    def __gt__(self, o): v = self._get(); return v > _other(v, o)
+    def __ge__(self, o): v = self._get(); return v >= _other(v, o)
+    def __eq__(self, o): v = self._get(); return v == _other(v, o)  # type: ignore[override]
+    def __ne__(self, o): v = self._get(); return v != _other(v, o)  # type: ignore[override]
+    def __bool__(self): return bool(self._get())
+    def __format__(self, spec): return format(self._get(), spec)
     __hash__ = None  # type: ignore[assignment]
 
     def __repr__(self) -> str:
         return f"<{self._cell!r} at {self._at}>"
 
 
-def _num(x: Any) -> float:
-    return float(x) if isinstance(x, Bound) else x
+def _num(x: Any) -> Any:
+    return x._get() if isinstance(x, Bound) else x
+
+
+def _other(value: Any, o: Any) -> Any:
+    """The right side of a comparison; a date compares with an ISO string, as in pandas."""
+    o = _num(o)
+    if isinstance(value, date) and isinstance(o, str):
+        return dates.coerce(datetime if isinstance(value, datetime) else date, o, "comparison")
+    return o
 
 
 class CellFunction:
@@ -196,11 +222,13 @@ def _env_value(name: str, value: Any, model: Model, source: str) -> Any:
         from .model import _text
 
         return {"$expr": _text(value)}
+    if (saved := dates.env_value(value)) is not None:
+        return saved
     if _is_json(value):
         return value
     raise DefinitionError(
         f"can't save formula {source!r}: it uses {name!r} = {value!r}; a saved formula may use "
-        "numbers, strings, lists and dicts of them, expressions, modules and the model"
+        "numbers, strings, lists and dicts of them, dates, expressions, modules and the model"
     )
 
 
@@ -215,6 +243,8 @@ def _env_restore(value: Any, model: Model) -> Any:
             from .text import parse
 
             return parse(v, model)
+        if key in dates.ENV_KEYS:
+            return dates.env_restore(key, v)
     return value
 
 
@@ -284,16 +314,17 @@ def run(fn: CellFunction, model: Model, item: Item, full: Mapping[str, str], rea
     """Call a function formula for one cell; numbers, expressions or None (missing) come back."""
     result = fn(Bound(model, Cell(model, item), full, reads))
     if isinstance(result, Bound):
-        return float(result)
+        return result._get()
     if isinstance(result, Expr):
         return result.evaluate(lambda c, a: _track(model, reads, c, a), full)
-    if result is None or isinstance(result, (int, float)) and not isinstance(result, bool):
-        return result
+    if result is None or isinstance(result, (int, float, date, timedelta)) and not isinstance(result, bool):
+        return result  # the model checks it against the item's dtype
     from .values import NIL
 
     if result is NIL:
         return result
-    raise DefinitionError(f"formula {fn!r} returned {result!r} for {item.name} {dict(full)}; it must return a number")
+    raise DefinitionError(f"formula {fn!r} returned {result!r} for {item.name} {dict(full)}; "
+                          "it must return a number, or a date for a date item")
 
 
 def _track(model: Model, reads: list, cell: Cell, at: Mapping[str, str]) -> float:

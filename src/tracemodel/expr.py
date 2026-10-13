@@ -14,8 +14,10 @@ from __future__ import annotations
 import html
 import operator
 from collections.abc import Callable, Mapping
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
+from . import dates
 from .errors import DefinitionError, UnknownCoord
 
 if TYPE_CHECKING:
@@ -50,13 +52,13 @@ class _Shows:
     # A table result carries the formula as its title; a scalar gets "formula = value".
     def _repr_pretty_(self, p, cycle) -> None:
         result = self.evaluate_table()
-        p.text(str(result) if hasattr(result, "_repr_html_") else f"{self!r} = {result:,}")
+        p.text(str(result) if hasattr(result, "_repr_html_") else f"{self!r} = {_fmt(result)}")
 
     def _repr_html_(self) -> str:
         result = self.evaluate_table()
         if hasattr(result, "_repr_html_"):
             return result._repr_html_()
-        return f"<pre>{html.escape(repr(self))} = {result:,}</pre>"
+        return f"<pre>{html.escape(repr(self))} = {html.escape(_fmt(result))}</pre>"
 
 
 class Expr(_Shows):
@@ -135,10 +137,16 @@ class Expr(_Shows):
     __hash__ = None  # type: ignore[assignment]
 
 
+def _fmt(value: Any) -> str:
+    from .table import _fmt
+
+    return _fmt(value)
+
+
 def _wrap(x: Any) -> Expr:
     if isinstance(x, Expr):
         return x
-    if isinstance(x, (int, float)) and not isinstance(x, bool):
+    if isinstance(x, (int, float, date, timedelta)) and not isinstance(x, bool):
         return Const(x)
     raise DefinitionError(f"can't use {x!r} in an expression")
 
@@ -146,7 +154,7 @@ def _wrap(x: Any) -> Expr:
 class Const(Expr):
     _repr_pretty_ = _Shows._repr_pretty_  # IPython prefers a subclass __repr__ otherwise
 
-    def __init__(self, value: float):
+    def __init__(self, value: float | date | timedelta):
         self.value = value
 
     def cells(self) -> list[Cell]:
@@ -156,7 +164,7 @@ class Const(Expr):
         return self.value
 
     def __repr__(self) -> str:
-        return repr(self.value)
+        return dates.literal(self.value) if isinstance(self.value, (date, timedelta)) else repr(self.value)
 
 
 class Abs(Expr):
@@ -189,7 +197,16 @@ class BinOp(Expr):
         return self.left.cells() + self.right.cells()
 
     def evaluate(self, lookup: Lookup, at: Mapping[str, str]) -> float:
-        return _OPS[self.op](self.left.evaluate(lookup, at), self.right.evaluate(lookup, at))
+        left, right = self.left.evaluate(lookup, at), self.right.evaluate(lookup, at)
+        try:
+            return _OPS[self.op](left, right)
+        except TypeError:  # a date and a number, two dates added, ...
+            hint = (" (a number of days is a timedelta: days * timedelta(days=1))"
+                    if {dates.kind(left), dates.kind(right)} & {"date", "datetime"} else "")
+            raise DefinitionError(
+                f"{self!r}: can't compute {dates.kind(left)} {self.op} {dates.kind(right)} "
+                f"({_fmt(left)} {self.op} {_fmt(right)}){hint}"
+            ) from None
 
     def __repr__(self) -> str:
         def side(e: Expr, right: bool) -> str:
@@ -376,6 +393,20 @@ _COMPARE = {
 }
 
 
+_EXACT = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge,
+          "==": operator.eq, "!=": operator.ne}
+
+
+def diff(lhs: Any, rhs: Any) -> Any:
+    """left - right for a report; None when missing or when the two can't be subtracted."""
+    if lhs is None or rhs is None:
+        return None
+    try:
+        return lhs - rhs
+    except TypeError:
+        return None
+
+
 class Comparison(Condition):
     """left <op> right."""
     _repr_pretty_ = _Shows._repr_pretty_  # IPython prefers a subclass __repr__ otherwise
@@ -391,7 +422,12 @@ class Comparison(Condition):
         return self.op
 
     def allows(self, lhs: float, rhs: float) -> bool:
-        return _COMPARE[self.op](lhs, rhs, _slack(lhs, rhs))
+        a, b = dates.kind(lhs), dates.kind(rhs)
+        if a == b == "number":
+            return _COMPARE[self.op](lhs, rhs, _slack(lhs, rhs))
+        if a != b:  # Python would call a date never == a number; say so instead
+            raise DefinitionError(f"{self!r}: can't compare a {a} with a {b} ({_fmt(lhs)} {self.op} {_fmt(rhs)})")
+        return _EXACT[self.op](lhs, rhs)  # dates and timedeltas: exact, no float slack
 
     def test(self, lookup: Lookup, at: Mapping[str, str]) -> bool:
         return self.allows(self.left.evaluate(lookup, at), self.right.evaluate(lookup, at))
@@ -435,8 +471,10 @@ class IsNil(Condition):
         return [self.cell]
 
     def test(self, lookup: Lookup, at: Mapping[str, str]) -> bool:
+        if self.cell.model._is_nil(self.cell, at):
+            return True
         lookup(self.cell, at)  # raises when the cell isn't entered: not entered isn't nil
-        return self.cell.model._is_nil(self.cell, at)
+        return False
 
     rule = "is nil"
 

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import html
 from collections.abc import Sequence
+from datetime import date, timedelta
 from typing import Any
+
+from . import dates
 
 
 class Table:
@@ -79,4 +82,6 @@ def _fmt(v: Any) -> str:
     if isinstance(v, float):
         v = round(v, 6)
         return f"{int(v):,}" if v == int(v) else f"{v:,.6f}".rstrip("0")
+    if isinstance(v, (date, timedelta)):
+        return dates.fmt(v)
     return str(v)
