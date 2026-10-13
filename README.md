@@ -104,8 +104,8 @@ model.add_dimension("channel", tm.Hierarchy(["/store", "/online"]))
 
 # 2. Items scaffold
 USD_K = {"units": "USD", "scale": "thousands"}
-model.add_item("revenue", dims=("region", "period"), dtype=float, attrs=USD_K)
-model.add_item("returns", dims=("channel", "period"), dtype=float, attrs=USD_K)
+model.add_item("revenue", dims=("region", "period"), dtype=float, attrs=USD_K, description="Net revenue")
+model.add_item("returns", dims=("channel", "period"), dtype=float, attrs=USD_K, description="Customer returns")
 model.add_item("stores", dims=("period",), dtype=int, attrs={"units": "stores"})
 
 # 3. Data quality: total revenue equals north plus south, in every period
@@ -143,7 +143,7 @@ model = tm.Model()
 | `add_dimension(name, coords)` | `coords` is a list of coord entries (see Coord entries) or a `tm.Hierarchy`. Re-adding an identical dimension is a no-op; a different one under the same name raises `DefinitionError`. |
 | `add_coords(name, entries)` | Appends labels to a dimension, e.g. forecast periods (entries as in Coord entries; a hierarchy path needs its parent). Items get the new cells, not entered. Checks given `tm.ANY` for that dimension are re-expanded to cover the new labels; checks with listed labels keep them. A function check loaded from a file can't build conditions for new labels of its parameter's dimension: `add_coords` raises and changes nothing, and you re-add the check with its function. Labels already there with the same entry are a no-op. Labels can't be removed or reordered. |
 | `remove_dimension(name)` | Removes a dimension that no item uses; raises `DefinitionError` naming the items that do. |
-| `add_item(name, dims, dtype=float, attrs=None, formula=None)` | `dims`: tuple of declared dimension names. `dtype`: `int`, `float`, `date` or `datetime` (as types or names; see Dates). `attrs`: free-form dict; `units` and `scale` are shown in tables. By convention `period_type` is `"duration"` (a flow over the period) or `"instant"` (a balance at its end), for whoever reads the model; the library doesn't act on it. `formula`: an expression that calculates the item's cells, or a Python function of the cell (see Formulas). Re-adding an identical item is a no-op. |
+| `add_item(name, dims, dtype=float, attrs=None, formula=None, description=None)` | `dims`: tuple of declared dimension names. `dtype`: `int`, `float`, `date` or `datetime` (as types or names; see Dates). `attrs`: free-form dict; `units` and `scale` are shown in tables. By convention `period_type` is `"duration"` (a flow over the period) or `"instant"` (a balance at its end), for whoever reads the model; the library doesn't act on it. `formula`: an expression that calculates the item's cells, or a Python function of the cell (see Formulas). `description`: the item's title as people read it, e.g. the caption the source prints ("Lease-related assets and liabilities"), as a dimension label has one; `name` stays the code formulas use. Re-adding an identical item is a no-op. |
 | `add_check(id, expect, coords=None, description=None, severity="error")` | `expect`: a condition, a function of dims that returns one, or a value check: a function of `x` that returns `True` or `False` (see Data quality). `coords`: `{dim: tm.ANY \| tm.filter_by_attrs(...) \| label \| [labels]}` — the check runs once per combination. Every dimension a cell leaves open must appear here, and every dimension here must be left open by some cell (otherwise `DefinitionError`). When every cell fixes all its coords, omit `coords`: the check runs once. `severity`: `"error"` or `"warning"`; a failing warning is reported but doesn't make `report.ok` false. An existing `id` is replaced. |
 | `model[item]` | An expression for the whole item; see Expressions. |
 | `model.item(name)` | The declared `Item`; raises `UnknownItem`. |

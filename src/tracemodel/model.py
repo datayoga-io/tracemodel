@@ -101,6 +101,7 @@ class Item:
     dtype: type
     attrs: dict[str, Any] = field(default_factory=dict)
     formula: Expr | None = field(default=None, compare=False)  # calculates cells with no entered value
+    description: str | None = None  # what the item is, as the source titles it: "Lease-related assets and liabilities"
 
     @property
     def unit_label(self) -> str:
@@ -269,9 +270,11 @@ class Model:
         dtype: type | str = float,
         attrs: Mapping[str, Any] | None = None,
         formula: Expr | Callable[..., Any] | None = None,
+        description: str | None = None,
     ) -> Item:
-        """Declare a line item: its dims, data type (int, float, date or datetime) and attrs
-        (units, scale, ...).
+        """Declare a line item: its dims, data type (int, float, date or datetime), attrs
+        (units, scale, ...) and a description, the item's title as people read it
+        ("Lease-related assets and liabilities"), as a dimension's labels have.
 
         With `formula`, the item's cells are calculated; a value entered with set_value
         overrides the formula for its cell. `formula` may be a function of `x`, the cell
@@ -294,7 +297,9 @@ class Model:
             raise DefinitionError(f"item {name!r}: dtype must be int, float, date or datetime, got {dtype!r}")
         if attrs is not None and not isinstance(attrs, Mapping):
             raise DefinitionError(f"item {name!r}: attrs must be a dict")
-        item = Item(name, dims, dtype, dict(attrs or {}))
+        if description is not None and not isinstance(description, str):
+            raise DefinitionError(f"item {name!r}: description must be a string")
+        item = Item(name, dims, dtype, dict(attrs or {}), description=description)
         old = self.items.get(name)
         if old is not None and old != item:
             raise DefinitionError(f"item {name!r} already exists with a different definition")
@@ -308,7 +313,7 @@ class Model:
                 if _same_formula(old.formula, formula):
                     return old
                 raise DefinitionError(f"item {name!r} already exists with a different formula")
-            self.items[name] = item = Item(name, dims, dtype, dict(attrs or {}), formula)
+            self.items[name] = item = Item(name, dims, dtype, dict(attrs or {}), formula, description)
             self._changed()
             if formula is not None:
                 self._check_cycles_now_or_at_commit(name, None)
@@ -680,7 +685,8 @@ class Model:
                 formula: Any = _load_function(text, model, allow_code, f"item {i['name']!r}")
             else:
                 formula = (lambda own, text=text: parse(text, model)) if text else None  # after the item exists
-            model.add_item(i["name"], i["dims"], i["dtype"], i.get("attrs"), formula=formula)
+            model.add_item(i["name"], i["dims"], i["dtype"], i.get("attrs"), formula=formula,
+                           description=i.get("description"))
             if isinstance(text, str) and isinstance(model.items[i["name"]].formula, CellFunction):
                 parse(text, model)  # it didn't parse: raise its error
                 raise DefinitionError(f"item {i['name']!r}: formula {text!r} is not an expression")
@@ -754,7 +760,9 @@ class Model:
         width = max((len(i.name) for i in self.items.values()), default=0)
         for i in self.items.values():
             formula = f"  = {i.formula!r}" if i.formula is not None else ""
-            lines.append(f"  {i.name:<{width}}   ({', '.join(i.dims)})  {i.dtype.__name__}  {_kv(i.attrs)}".rstrip() + formula)
+            described = f"  {i.description}" if i.description else ""
+            lines.append(f"  {i.name:<{width}}   ({', '.join(i.dims)})  {i.dtype.__name__}{described}  {_kv(i.attrs)}".rstrip()
+                         + formula)
         lines.append("Checks:")
         for c in self.checks.values():
             if c.params:
@@ -1098,6 +1106,8 @@ def _dimension_data(dim: Dimension) -> dict[str, Any]:
 
 def _item_data(item: Item, model: Model) -> dict[str, Any]:
     data: dict[str, Any] = {"name": item.name, "dims": list(item.dims), "dtype": item.dtype.__name__}
+    if item.description is not None:
+        data["description"] = item.description
     if item.attrs:
         data["attrs"] = item.attrs
     if item.formula is not None:
