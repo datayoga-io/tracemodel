@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
+from . import dates
 from .errors import UnknownCoord
 from .table import Table, _fmt
 
@@ -47,7 +48,7 @@ class Entry:
 
     def to_json(self) -> dict[str, Any]:
         row = {"line_item": self.item, "coords": self.coords,
-               "value": None if self.value is NIL else self.value, "source": self.source}
+               "value": None if self.value is NIL else dates.to_json(self.value), "source": self.source}
         return row | ({"overrides_formula": True} if self.overrides_formula else {})
 
 
@@ -75,9 +76,9 @@ class CheckResult:
 
     @property
     def diff(self) -> float | None:
-        if self.lhs is None or self.rhs is None:
-            return None
-        return self.lhs - self.rhs
+        from .expr import diff
+
+        return diff(self.lhs, self.rhs)
 
     @property
     def missing(self) -> list[CellRead]:

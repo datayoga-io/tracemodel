@@ -12,9 +12,11 @@ import keyword
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Self
 
+from . import dates
 from .cellfn import CellFunction, CheckX, compile_check, compile_formula, run
 from .dimensions import Dimension, Hierarchy, _parse_entry
 from .errors import (
@@ -25,7 +27,7 @@ from .errors import (
     UnknownCoord,
     UnknownItem,
 )
-from .expr import Cell, Comparison, Condition, Expr, OutOfRange
+from .expr import Cell, Comparison, Condition, Expr, OutOfRange, diff
 from .table import Table
 from .values import (
     NIL,
@@ -38,7 +40,7 @@ from .values import (
     _Nil,
 )
 
-DTYPES = {"int": int, "float": float}
+DTYPES = {"int": int, "float": float, **dates.DTYPE_NAMES}
 SEVERITIES = ("error", "warning")
 
 
@@ -99,6 +101,7 @@ class Item:
     dtype: type
     attrs: dict[str, Any] = field(default_factory=dict)
     formula: Expr | None = field(default=None, compare=False)  # calculates cells with no entered value
+    description: str | None = None  # what the item is, as the source titles it: "Lease-related assets and liabilities"
 
     @property
     def unit_label(self) -> str:
@@ -267,8 +270,11 @@ class Model:
         dtype: type | str = float,
         attrs: Mapping[str, Any] | None = None,
         formula: Expr | Callable[..., Any] | None = None,
+        description: str | None = None,
     ) -> Item:
-        """Declare a line item: its dims, data type (int or float) and attrs (units, scale, ...).
+        """Declare a line item: its dims, data type (int, float, date or datetime), attrs
+        (units, scale, ...) and a description, the item's title as people read it
+        ("Lease-related assets and liabilities"), as a dimension's labels have.
 
         With `formula`, the item's cells are calculated; a value entered with set_value
         overrides the formula for its cell. `formula` may be a function of `x`, the cell
@@ -286,12 +292,14 @@ class Model:
                     f"item {name!r} uses dim {d!r}, which is not declared; call add_dimension first"
                 )
         if isinstance(dtype, str):
-            dtype = DTYPES.get(dtype, dtype)  # type: ignore[arg-type]
-        if dtype not in (int, float):
-            raise DefinitionError(f"item {name!r}: dtype must be int or float, got {dtype!r}")
+            dtype = DTYPES.get(dtype) or dates.dtype_from_name(dtype)  # type: ignore[assignment]
+        if not any(dtype is t for t in (int, float, date, datetime)):
+            raise DefinitionError(f"item {name!r}: dtype must be int, float, date or datetime, got {dtype!r}")
         if attrs is not None and not isinstance(attrs, Mapping):
             raise DefinitionError(f"item {name!r}: attrs must be a dict")
-        item = Item(name, dims, dtype, dict(attrs or {}))
+        if description is not None and not isinstance(description, str):
+            raise DefinitionError(f"item {name!r}: description must be a string")
+        item = Item(name, dims, dtype, dict(attrs or {}), description=description)
         old = self.items.get(name)
         if old is not None and old != item:
             raise DefinitionError(f"item {name!r} already exists with a different definition")
@@ -305,7 +313,7 @@ class Model:
                 if _same_formula(old.formula, formula):
                     return old
                 raise DefinitionError(f"item {name!r} already exists with a different formula")
-            self.items[name] = item = Item(name, dims, dtype, dict(attrs or {}), formula)
+            self.items[name] = item = Item(name, dims, dtype, dict(attrs or {}), formula, description)
             self._changed()
             if formula is not None:
                 self._check_cycles_now_or_at_commit(name, None)
@@ -529,6 +537,8 @@ class Model:
                 value = compile_formula(value, self, item)
             if not isinstance(value, CellFunction):
                 self._check_formula(f"{line_item}{_fmt(full)}: formula", item.dims, value)
+        if item.dtype in dates.TEMPORAL and value is not NIL and not _is_formula(value):
+            value = dates.coerce(item.dtype, value, f"{line_item}{_fmt(full)}")
         self._validate(item, value, source)
         previous = self._entries.get(key)
         if previous is not None:
@@ -551,7 +561,7 @@ class Model:
                 raise
 
     def get(self, line_item: str, **coords: str) -> float:
-        """The cell's value; a nil cell gives 0 (its entry keeps tm.NIL)."""
+        """The cell's value; a nil cell gives 0 (its entry keeps tm.NIL), a nil date tm.NIL."""
         item = self.item(line_item)
         key, full = self._key(line_item, coords)
         formula = self._formula_of(item, key[1])
@@ -561,7 +571,7 @@ class Model:
             value = self._value(Cell(self, item, full), {})
             if value is None:
                 raise MissingValue(f"{line_item}{_fmt(full)}: its formula {formula!r} reads a cell with no value")
-        return 0 if value is NIL else value
+        return 0 if value is NIL and item.dtype not in dates.TEMPORAL else value
 
     def entry(self, line_item: str, **coords: str) -> Entry | Table:
         """One entry when coords are complete; otherwise a table of the matching entries."""
@@ -602,8 +612,7 @@ class Model:
             rows = []
             for at in combos:
                 lhs, rhs = self._sides(expr, at)
-                diff = None if lhs is None or rhs is None else lhs - rhs
-                rows.append([*at.values(), lhs, rhs, diff, result(expr, at)])
+                rows.append([*at.values(), lhs, rhs, diff(lhs, rhs), result(expr, at)])
             return Table([*free, "left", "right", "diff", "result"], rows, title=repr(expr))
         if isinstance(expr, Condition):  # & | ~: each part, then the whole
             rows = [[*at.values(), *(result(p, at) for p in expr.parts), result(expr, at)] for at in combos]
@@ -676,7 +685,8 @@ class Model:
                 formula: Any = _load_function(text, model, allow_code, f"item {i['name']!r}")
             else:
                 formula = (lambda own, text=text: parse(text, model)) if text else None  # after the item exists
-            model.add_item(i["name"], i["dims"], i["dtype"], i.get("attrs"), formula=formula)
+            model.add_item(i["name"], i["dims"], i["dtype"], i.get("attrs"), formula=formula,
+                           description=i.get("description"))
             if isinstance(text, str) and isinstance(model.items[i["name"]].formula, CellFunction):
                 parse(text, model)  # it didn't parse: raise its error
                 raise DefinitionError(f"item {i['name']!r}: formula {text!r} is not an expression")
@@ -750,7 +760,9 @@ class Model:
         width = max((len(i.name) for i in self.items.values()), default=0)
         for i in self.items.values():
             formula = f"  = {i.formula!r}" if i.formula is not None else ""
-            lines.append(f"  {i.name:<{width}}   ({', '.join(i.dims)})  {i.dtype.__name__}  {_kv(i.attrs)}".rstrip() + formula)
+            described = f"  {i.description}" if i.description else ""
+            lines.append(f"  {i.name:<{width}}   ({', '.join(i.dims)})  {i.dtype.__name__}{described}  {_kv(i.attrs)}".rstrip()
+                         + formula)
         lines.append("Checks:")
         for c in self.checks.values():
             if c.params:
@@ -847,9 +859,7 @@ class Model:
                 value = self._try(formula, full)
         finally:
             self._evaluating.discard(key)
-        item = self.items[key[0]]
-        if item.dtype is int and isinstance(value, float):
-            value = _whole(value, item, formula, full)
+        value = _typed(value, self.items[key[0]], formula, full)
         self._cache[key] = value
         return value
 
@@ -893,7 +903,14 @@ class Model:
         value = self._value(cell, at)
         if value is None:
             raise _Missing
-        return 0 if value is NIL else value
+        if value is NIL:
+            if cell.item.dtype in dates.TEMPORAL:  # nil counts as 0, but there is no date 0
+                raise DefinitionError(
+                    f"{cell!r}{_fmt(cell.resolve(at))} is nil: it has no date to compute with; "
+                    f"test {cell!r}.is_nil() first"
+                )
+            return 0
+        return value
 
     def _try(self, expr: Expr, at: Mapping[str, str], show_nil: bool = False) -> float | _Nil | None:
         if show_nil and isinstance(expr, Cell) and self._value(expr, at) is NIL:
@@ -917,7 +934,7 @@ class Model:
 
     @staticmethod
     def _validate(item: Item, value: object, source: object) -> None:
-        if value is NIL or _is_formula(value):
+        if value is NIL or _is_formula(value) or item.dtype in dates.TEMPORAL:  # dates: set_value coerced it
             pass
         elif isinstance(value, bool) or not isinstance(value, (int, float)):
             raise InvalidValue(f"{item.name}: value must be a number, got {value!r}")
@@ -949,6 +966,29 @@ def _whole(value: float, item: Item, formula: object, full: Mapping[str, str]) -
     raise DefinitionError(
         f"{item.name}{_fmt(dict(full))} is int, but its formula {formula!r} gave {value!r}; "
         f"round it in the formula, e.g. formula=lambda x: round(...)"
+    )
+
+
+def _typed(value: Any, item: Item, formula: object, full: Mapping[str, str]) -> Any:
+    """A calculated value as the item's dtype; a value of another kind is an error in the formula."""
+    if value is None or value is NIL:
+        return value
+    kind = dates.kind(value)
+    if item.dtype is int and isinstance(value, float):
+        return _whole(value, item, formula, full)
+    if (item.dtype in (int, float) and kind == "number") or (item.dtype is date and kind == "date") \
+            or (item.dtype is datetime and kind == "datetime"):
+        return value
+    if item.dtype is datetime and kind == "date":
+        return datetime(value.year, value.month, value.day)
+    hint = ""
+    if kind == "timedelta":
+        hint = "; a date minus a date is a timedelta: take its days, e.g. lambda x: (x['end'] - x['start']).days"
+    elif item.dtype is date and kind == "datetime":
+        hint = "; take its date, e.g. lambda x: x['at'].dt.date"
+    raise DefinitionError(
+        f"{item.name}{_fmt(dict(full))} is {item.dtype.__name__}, but its formula {formula!r} "
+        f"gave a {kind}, {value!r}{hint}"
     )
 
 
@@ -1066,6 +1106,8 @@ def _dimension_data(dim: Dimension) -> dict[str, Any]:
 
 def _item_data(item: Item, model: Model) -> dict[str, Any]:
     data: dict[str, Any] = {"name": item.name, "dims": list(item.dims), "dtype": item.dtype.__name__}
+    if item.description is not None:
+        data["description"] = item.description
     if item.attrs:
         data["attrs"] = item.attrs
     if item.formula is not None:

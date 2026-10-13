@@ -104,8 +104,8 @@ model.add_dimension("channel", tm.Hierarchy(["/store", "/online"]))
 
 # 2. Items scaffold
 USD_K = {"units": "USD", "scale": "thousands"}
-model.add_item("revenue", dims=("region", "period"), dtype=float, attrs=USD_K)
-model.add_item("returns", dims=("channel", "period"), dtype=float, attrs=USD_K)
+model.add_item("revenue", dims=("region", "period"), dtype=float, attrs=USD_K, description="Net revenue")
+model.add_item("returns", dims=("channel", "period"), dtype=float, attrs=USD_K, description="Customer returns")
 model.add_item("stores", dims=("period",), dtype=int, attrs={"units": "stores"})
 
 # 3. Data quality: total revenue equals north plus south, in every period
@@ -143,7 +143,7 @@ model = tm.Model()
 | `add_dimension(name, coords)` | `coords` is a list of coord entries (see Coord entries) or a `tm.Hierarchy`. Re-adding an identical dimension is a no-op; a different one under the same name raises `DefinitionError`. |
 | `add_coords(name, entries)` | Appends labels to a dimension, e.g. forecast periods (entries as in Coord entries; a hierarchy path needs its parent). Items get the new cells, not entered. Checks given `tm.ANY` for that dimension are re-expanded to cover the new labels; checks with listed labels keep them. A function check loaded from a file can't build conditions for new labels of its parameter's dimension: `add_coords` raises and changes nothing, and you re-add the check with its function. Labels already there with the same entry are a no-op. Labels can't be removed or reordered. |
 | `remove_dimension(name)` | Removes a dimension that no item uses; raises `DefinitionError` naming the items that do. |
-| `add_item(name, dims, dtype=float, attrs=None, formula=None)` | `dims`: tuple of declared dimension names. `dtype`: `int` or `float`. `attrs`: free-form dict; `units` and `scale` are shown in tables. By convention `period_type` is `"duration"` (a flow over the period) or `"instant"` (a balance at its end), for whoever reads the model; the library doesn't act on it. `formula`: an expression that calculates the item's cells, or a Python function of the cell (see Formulas). Re-adding an identical item is a no-op. |
+| `add_item(name, dims, dtype=float, attrs=None, formula=None, description=None)` | `dims`: tuple of declared dimension names. `dtype`: `int`, `float`, `date` or `datetime` (as types or names; see Dates). `attrs`: free-form dict; `units` and `scale` are shown in tables. By convention `period_type` is `"duration"` (a flow over the period) or `"instant"` (a balance at its end), for whoever reads the model; the library doesn't act on it. `formula`: an expression that calculates the item's cells, or a Python function of the cell (see Formulas). `description`: the item's title as people read it, e.g. the caption the source prints ("Lease-related assets and liabilities"), as a dimension label has one; `name` stays the code formulas use. Re-adding an identical item is a no-op. |
 | `add_check(id, expect, coords=None, description=None, severity="error")` | `expect`: a condition, a function of dims that returns one, or a value check: a function of `x` that returns `True` or `False` (see Data quality). `coords`: `{dim: tm.ANY \| tm.filter_by_attrs(...) \| label \| [labels]}` — the check runs once per combination. Every dimension a cell leaves open must appear here, and every dimension here must be left open by some cell (otherwise `DefinitionError`). When every cell fixes all its coords, omit `coords`: the check runs once. `severity`: `"error"` or `"warning"`; a failing warning is reported but doesn't make `report.ok` false. An existing `id` is replaced. |
 | `model[item]` | An expression for the whole item; see Expressions. |
 | `model.item(name)` | The declared `Item`; raises `UnknownItem`. |
@@ -162,8 +162,8 @@ model = tm.Model()
 
 | Call | Does |
 | --- | --- |
-| `set_value(line_item, coords, value, source)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers), or `tm.NIL` (see below), or an expression: a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
-| `get(line_item, **coords)` | The number at full coords (0 for a nil cell). |
+| `set_value(line_item, coords, value, source)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers; date items take a date or an ISO string), or `tm.NIL` (see below), or an expression: a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
+| `get(line_item, **coords)` | The value at full coords: a number, or a date for a date item (0 for a nil cell; `tm.NIL` for a nil date). |
 | `entry(line_item, **coords)` | With full coords: an `Entry` (`value`, `source`, `history`). With fewer coords: a `Table` of matching entries. |
 | `table(line_item)` | The item as a grid: `period` across (if the item has it), other dims down. Cells not entered are blank; nil cells show `—`. |
 | `evaluate(expr)` | Evaluates an expression for every combination of its open dims: a `Table`, or a number when no dim is open. |
@@ -394,6 +394,7 @@ model.add_item("revolver_draw", dims=("period",), attrs=USD_K,
 | `x.coords` | this cell's labels, e.g. `{"period": "Q2"}` |
 | `x.attrs("period")` | the attrs of this cell's period label, e.g. `{"kind": "forecast"}` |
 | `x.is_nil()` | whether the cell read was entered as `tm.NIL` |
+| `x["start"].dt.month`, `.dt.to_period("M")` | fields of a date cell (see Dates) |
 
 **One formula for many lines.** When an item spans lines that each need their own formula (a
 balance sheet over a `bs_line` hierarchy), give the item one function that picks by label.
@@ -414,14 +415,14 @@ model.add_item("balance_sheet", dims=("bs_line", "period"),
 Forecast periods added later with `add_coords` are calculated too. (`x["/current/receivables"]`
 reads a line of the item itself, since no item has that name.)
 
-- `x` and what it reads behave as numbers. A cell that isn't entered makes the whole cell
+- `x` and what it reads behave as their values: numbers, or dates for date items. A cell that isn't entered makes the whole cell
   missing, as for expressions; a division by zero too.
 - If the function only uses expressions (`lambda x: x["cash"] - FLOOR`), it is stored as an
   expression: `print(model)` shows `cash - 25000`, and circular formulas are rejected when it is
   added. Otherwise `print(model)` shows the function's source, the cells each cell read are
   traced when it runs, and a formula that reads itself raises `DefinitionError` when calculated.
 - Saving stores the function's source and the values of the names it uses (`FLOOR`, modules,
-  numbers, strings, lists, dicts). A function typed at a plain `python` prompt has no source and
+  numbers, strings, lists, dicts, dates). A function typed at a plain `python` prompt has no source and
   can't be saved. Loading runs the code, so it needs `tm.load(path, allow_code=True)` and
   `load_jsonl(path, allow_code=True)`; run files you don't trust in a sandbox.
 
@@ -529,6 +530,66 @@ with model.transaction():
 Calculated cells are cached and the cache is cleared on any change, so a long chain of
 formulas (years of monthly periods, each reading the one before) is calculated once per cell.
 
+### Dates
+
+Items can hold dates, as pandas and xarray columns do:
+
+```python
+from datetime import date, timedelta
+
+model.add_dimension("milestone", ["footings", "topped_out"])
+model.add_item("baseline_date", ("milestone",), dtype=date)            # or dtype="date"
+model.add_item("forecast_date", ("milestone",), dtype=date,
+               formula=lambda x: x["baseline_date"])                   # re-forecast by entering it
+model.set_value("baseline_date", {"milestone": "footings"}, date(2026, 3, 20), SRC)
+model.set_value("baseline_date", {"milestone": "topped_out"}, "2026-06-15", SRC)   # ISO string
+```
+
+| dtype | Holds | Accepts in `set_value` |
+| --- | --- | --- |
+| `date` (`"date"`) | `datetime.date` | a date, an ISO string `"2026-03-31"`, or a datetime at midnight (a pandas `Timestamp`) |
+| `datetime` (`"datetime"`, `"datetime64[ns]"`) | `datetime.datetime`, no time zone (as numpy's `datetime64`) | a datetime, a date (midnight), an ISO string `"2026-03-31T09:30"`; pandas `Timestamp` and numpy `datetime64` too |
+
+Arithmetic follows pandas: a date minus a date is a `timedelta`, and a date plus a `timedelta`
+is a date. Comparisons are exact; there is no tolerance for dates.
+
+```python
+model.add_item("deadline", ("milestone",), dtype=date,
+               formula=model["baseline_date"] + timedelta(days=14))      # an expression
+model.add_check("ON-TIME", coords={"milestone": tm.ANY},
+                expect=model["forecast_date"] <= model["baseline_date"] + timedelta(days=30))
+model.add_item("slip_days", ("milestone",), dtype=int,
+               formula=lambda x: (x["forecast_date"] - x["baseline_date"]).days)
+```
+
+In a function formula or value check, `.dt` gives a date cell's fields with pandas' names:
+`year`, `month`, `day`, `quarter`, `dayofweek` (Monday is 0), `dayofyear`, `days_in_month`,
+`is_month_start`, `is_month_end`, `is_quarter_start`, `is_quarter_end`, `is_year_start`,
+`is_year_end`, `hour`, `minute`, `second`, `date`, `strftime(fmt)`, and `to_period(freq)`: the
+period label as pandas prints it (`"M"` → `"2026-03"`, `"Q"` → `"2026Q1"`, `"Y"` → `"2026"`,
+`"D"` → `"2026-03-31"`). A date also compares with an ISO string there:
+`x["start"] >= "2026-01-01"`.
+
+A date places a number on a period dimension. Here each contract's milestone payment lands in
+the month its milestone is forecast, so re-forecasting the milestone moves every contract's
+payment:
+
+```python
+model.add_item("payment", ("contract", "milestone"), formula=lambda x: 0)   # 0 unless the terms say so
+model.add_item("planned_cost", ("contract", "month"), formula=lambda x: sum(
+    x["payment"].sel(milestone=ms) for ms in model.dimensions["milestone"].coords
+    if x["forecast_date"].sel(milestone=ms).dt.to_period("M") == x.coords["month"]))
+```
+
+- A formula's result must fit its item's dtype: a timedelta in a number item raises
+  `DefinitionError` (take `.days`), and so does a datetime in a date item (take `.dt.date`).
+- Mixing dates and numbers (`date + 1`, `date > 0`) raises `DefinitionError`; in a check, the
+  run fails with the error. Use `timedelta(days=n)`, or `x["days"] * timedelta(days=1)`.
+- `tm.NIL` on a date item means there is no date (a milestone that was dropped). It doesn't
+  count as 0: test `is_nil()` before computing with it, or the calculation raises.
+- Tables show ISO dates and timedeltas in days (`18 days`). The values file writes dates as ISO
+  strings; definition files write `date('2026-03-31')` and `timedelta(days=30)` in expressions.
+
 ### Not entered vs nil
 
 A cell is either **not entered** (the default: no `set_value` yet) or has a value. When the
@@ -589,7 +650,7 @@ model.load_jsonl("retail.values.jsonl")
   `"expect": "abs(revenue['/'] - (revenue['/north'] + revenue['/south'])) <= 0.5"`.
   Loading parses that text with Python's `ast` and accepts only the expression grammar (item
   names, `["label"]`, `.sel()`, `.lag()`, `.lead()`, `.shift()`, `.is_nil()`, `abs()`, numbers,
-  `+ - * /`, one comparison, `& | ~`). Nothing is evaluated as code, so a model file from
+  `date('...')`, `datetime('...')`, `timedelta(...)`, `+ - * /`, one comparison, `& | ~`). Nothing is evaluated as code, so a model file from
   anyone is safe to load.
 - A function check is saved as the condition it built for each label (`expect_by_label`); the
   function itself isn't needed again. `tm.ANY` is saved as `"ANY"`.
@@ -606,7 +667,7 @@ model.load_jsonl("retail.values.jsonl")
 {"line_item": "revenue", "coords": {"region": "/north", "period": "Q1"}, "value": 700, "source": {"document": "Q2 sales report", "url": "https://example.com/q2.pdf", "section": "Table 1"}}
 ```
 
-A nil cell is written with `"value": null`; a cell formula with `"formula": "<expression>"` instead of `"value"`. A value that overrides a formula adds `"overrides_formula": true`.
+A date is written as an ISO string (`"value": "2026-03-31"`). A nil cell is written with `"value": null`; a cell formula with `"formula": "<expression>"` instead of `"value"`. A value that overrides a formula adds `"overrides_formula": true`.
 
 ## Development
 
@@ -618,6 +679,7 @@ uv run pytest
 
 | Project | What we take from it |
 | --- | --- |
+| [pandas](https://pandas.pydata.org/) | Date and datetime columns, ISO strings parsed as dates, date differences as timedeltas, the `.dt` accessor's field names and `to_period` labels. |
 | [xarray](https://docs.xarray.dev/) | Named dimensions, coordinate labels, selection by label (`.sel`), broadcasting by dimension name. |
 | [Great Expectations](https://docs.greatexpectations.io/) | Data quality rules as declared *expectations*, grouped into suites and run against the data; `severity` (critical / warning / info) and `mostly` (pass when a share of rows passes). |
 | [XBRL Formula](https://www.xbrl.org/specification/validation/REC-2009-06-22/validation-REC-2009-06-22.html) | Value and consistency *assertions* over reported financial facts, with absolute and proportional acceptance radii; satisfied / unsatisfied with a severity. |

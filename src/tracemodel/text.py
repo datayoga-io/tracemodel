@@ -2,17 +2,19 @@
 
 The text is parsed with `ast` and interpreted node by node; nothing is passed to eval. Only
 the expression grammar is accepted: item names, ["label"], .sel(), .lag(), .lead(),
-.shift(), .is_nil(), abs(), numbers, + - * /, unary -, one comparison, and & | ~.
+.shift(), .is_nil(), abs(), numbers, date('2026-03-31'), datetime('2026-03-31T09:30:00'),
+timedelta(days=30), + - * /, unary -, one comparison, and & | ~.
 """
 
 from __future__ import annotations
 
 import ast
 import operator
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from .errors import DefinitionError
-from .expr import Cell, Condition, Expr
+from .expr import Cell, Condition, Const, Expr
 
 if TYPE_CHECKING:
     from .model import Model
@@ -26,6 +28,7 @@ _COMPARE = {
     ast.Eq: operator.eq, ast.NotEq: operator.ne,
 }
 _CELL_METHODS = {"sel", "lag", "lead", "shift", "is_nil"}
+_TIMEDELTA_ARGS = {"weeks", "days", "hours", "minutes", "seconds", "milliseconds", "microseconds"}
 
 
 def parse(text: str, model: Model) -> Expr | Condition:
@@ -64,6 +67,15 @@ class _Reader:
                 return self.cell(value)[label]
             case ast.Call(func=ast.Name(id="abs"), args=[arg], keywords=[]):
                 return abs(self.read(arg))
+            case ast.Call(func=ast.Name(id="date" | "datetime" as kind), args=[ast.Constant(value=str() as iso)], keywords=[]):
+                try:
+                    return Const(date.fromisoformat(iso) if kind == "date" else datetime.fromisoformat(iso))
+                except ValueError:
+                    raise self.fail(node, f"{iso!r} is not an ISO {kind}") from None
+            case ast.Call(func=ast.Name(id="timedelta"), args=[], keywords=keywords):
+                if any(k.arg not in _TIMEDELTA_ARGS for k in keywords):
+                    raise self.fail(node, f"timedelta takes {', '.join(sorted(_TIMEDELTA_ARGS))}")
+                return Const(timedelta(**{k.arg: self.number(k.value) for k in keywords}))
             case ast.Call(func=ast.Attribute(value=value, attr=attr)) if attr in _CELL_METHODS:
                 args = [self.constant(a) for a in node.args]
                 kwargs = {k.arg: self.constant(k.value) for k in node.keywords if k.arg}
@@ -83,6 +95,14 @@ class _Reader:
         if not isinstance(value, Condition):
             raise self.fail(node, "~ takes a condition")
         return value
+
+    def number(self, node: ast.AST) -> int | float:
+        match node:
+            case ast.Constant(value=v) if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return v
+            case ast.UnaryOp(op=ast.USub(), operand=ast.Constant(value=v)) if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return -v
+        raise self.fail(node, "timedelta arguments must be numbers")
 
     def constant(self, node: ast.AST) -> str | int:
         match node:
