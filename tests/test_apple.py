@@ -1,6 +1,7 @@
 """Tests for tracemodel, driven by the Apple FY2024-FY2025 example."""
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -106,6 +107,22 @@ def test_re_adding_same_item_is_a_no_op(empty):
     empty.add_item("net_sales", dims=("sales_category", "period"), dtype=float, attrs=USD_M)
     with pytest.raises(tm.DefinitionError, match="different definition"):
         empty.add_item("net_sales", dims=("period",))
+
+
+def test_item_description(empty, tmp_path):
+    item = empty.add_item("lease_balances", dims=("period",), attrs=USD_M,
+                          description="Lease-related assets and liabilities")
+    assert item.description == "Lease-related assets and liabilities"
+    assert empty.items["net_sales"].description is None
+    assert re.search(r"lease_balances +\(period\)  float  Lease-related assets and liabilities", repr(empty))
+    with pytest.raises(tm.DefinitionError, match="different definition"):
+        empty.add_item("lease_balances", dims=("period",), attrs=USD_M, description="Leases")
+    with pytest.raises(tm.DefinitionError, match="description must be a string"):
+        empty.add_item("x", dims=("period",), description=3)
+    empty.save(tmp_path / "model.json")
+    again = tm.load(tmp_path / "model.json")
+    assert again.items["lease_balances"].description == "Lease-related assets and liabilities"
+    assert again.items["net_sales"].description is None
 
 
 # -- 3. data quality ---------------------------------------------------------
