@@ -155,10 +155,11 @@ class Model:
         self._evaluating: set[tuple[str, tuple[str, ...]]] = set()  # cells being calculated, to catch loops
         self._calculating: list[tuple[str, tuple[str, ...]]] = []  # the same, innermost last: who is reading
         self._deps: dict[tuple[str, tuple[str, ...]], list] = {}  # what a function formula read, per cell
-        # cell -> the cached cells and check runs that read it, so a new value recalculates only those
+        # cell -> its dependents: the cached cells and check runs that read it, so a new value
+        # recalculates only those (Excel's dependency tree)
         self._dependents: dict[tuple[str, tuple[str, ...]], set[tuple[str, tuple[str, ...]]]] = {}
         self._runs: dict[tuple[str, tuple[tuple[str, str], ...]], CheckResult] = {}  # check runs, until a read changes
-        self._run_readers: dict[tuple[str, tuple[str, ...]], set[tuple[str, tuple[tuple[str, str], ...]]]] = {}
+        self._run_dependents: dict[tuple[str, tuple[str, ...]], set[tuple[str, tuple[tuple[str, str], ...]]]] = {}
         self._tx: Transaction | None = None
 
     # == transactions =======================================================
@@ -184,7 +185,7 @@ class Model:
         self._deps.clear()
         self._dependents.clear()
         self._runs.clear()
-        self._run_readers.clear()
+        self._run_dependents.clear()
 
     def _value_changed(self, key: tuple[str, tuple[str, ...]]) -> None:
         """A cell's entry changed: forget the cells and check runs that read it, and theirs."""
@@ -193,7 +194,7 @@ class Model:
             k = stack.pop()
             self._cache.pop(k, None)
             self._deps.pop(k, None)
-            for run_key in self._run_readers.pop(k, ()):
+            for run_key in self._run_dependents.pop(k, ()):
                 self._runs.pop(run_key, None)
             for d in self._dependents.pop(k, ()):
                 if d not in seen:
@@ -508,7 +509,7 @@ class Model:
             if result.error is None:  # a run that raised may not have read everything it needs
                 self._runs[run_key] = result
                 for r in result.cells:
-                    self._run_readers.setdefault((r.item, tuple(r.coords.values())), set()).add(run_key)
+                    self._run_dependents.setdefault((r.item, tuple(r.coords.values())), set()).add(run_key)
         return result
 
     def _run(self, check: Check, at: dict[str, str]) -> CheckResult:
