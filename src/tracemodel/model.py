@@ -10,7 +10,7 @@ import itertools
 import json
 import keyword
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -709,6 +709,34 @@ class Model:
             model._install_check(Check(c["id"], run_over, expect, c.get("description"), params,
                                        conditions, c.get("severity", "error"), dynamic))
         return model
+
+    def to_excel(
+        self,
+        path: str | Path,
+        *,
+        title: str = "Model",
+        sections: Mapping[str, Sequence[str]] | None = None,
+        layout: str = "sheet",
+        columns: str | None = None,
+        split_after: tuple[str, str] | None = None,
+        page_breaks: bool = True,
+    ) -> None:
+        """Write the model to an Excel workbook, for people who read models in Excel.
+
+        Items are blocks one under the other, sharing the columns (`columns`, default: period,
+        else each item's last dim that isn't a hierarchy); their other dims read down. `sections`
+        groups items, e.g. {"Income statement": ["net_sales", ...], ...}; other items group
+        by their dims. layout="sheet" puts the sections that share the columns on one sheet,
+        each under a banner and, with `page_breaks`, on its own printed page; layout="sheets"
+        gives each its own sheet. `split_after` = (dim, label) draws a line after a column,
+        e.g. ("month", "2026-03") between actuals and forecast. Then the model as tables:
+        dimensions, items, checks, check results, and every value with its source.
+        Needs openpyxl: pip install pytracemodel[excel].
+        """
+        from .excel import to_excel
+
+        to_excel(self, path, title=title, sections=sections, layout=layout, columns=columns,
+                 split_after=split_after, page_breaks=page_breaks)
 
     def to_jsonl(self, path: str | Path) -> None:
         """Write one JSON object per value."""

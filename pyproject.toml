@@ -27,6 +27,9 @@ Homepage = "https://github.com/datayoga-io/tracemodel"
 Repository = "https://github.com/datayoga-io/tracemodel"
 Issues = "https://github.com/datayoga-io/tracemodel/issues"
 
+[project.optional-dependencies]
+excel = ["openpyxl>=3.1"]  # model.to_excel
+
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
@@ -38,6 +41,7 @@ packages = ["src/tracemodel"]  # installed as pytracemodel, imported as tracemod
 dev = [
     "ipython>=9.17.1",
     "jupyterlab>=4.6.4",
+    "openpyxl>=3.1",
     "pytest>=9.1.1",
 ]
 
