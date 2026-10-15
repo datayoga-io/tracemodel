@@ -200,11 +200,16 @@ print(f"{sum(x.passed for x in r.results)}/{len(r.results)} check runs pass; ok=
 
 - Loading `values.jsonl` validates every value against the definition, in one transaction: a bad
   row loads nothing.
-- If the definition or the values hold formulas written as Python functions, `tm.load` and
-  `load_jsonl` refuse them until you pass `allow_code=True`, which runs that code. Do that inside
-  the agent's sandbox, since an agent wrote it.
+- Formulas and checks are lambdas of `x`; `tm.load` and `load_jsonl` check each one against the
+  formula allow-list and compile it with RestrictedPython, and run nothing else in the file. To
+  read a file without running any formula, load it with `formulas="off"`. To calculate a file an
+  agent wrote, run it inside the agent's sandbox, since an agent wrote it.
 - `report.failures` lists the runs that didn't pass, and `report.explain()` shows the cells each
-  one read.
+  one read. `model.precedents(item, **coords)` shows what a formula can read, and
+  `model.dependents(...)` what reads a cell.
+- Formulas and checks are written as `lambda x: ...`, in a `.py` file or as source text
+  (`formula="lambda x: x['revenue'] * 0.6"`). A lambda typed in `python -c` has no source file to
+  read, so pass its text there.
 
 ## The short way
 
@@ -245,6 +250,6 @@ These are the points both agents raised. They are worth knowing before you adapt
   tasks. Keep the rules.
 - **Another agent.** Keep the sandbox (wheel plus README), the read-only rule for the data-entry
   agent, and the checks in step 4.
-- **Formulas from a file.** A definition with formulas written as Python functions loads only
-  with `tm.load(path, allow_code=True)`, because loading runs the code. Load files you didn't
-  write in a sandbox.
+- **Formulas from a file.** Every formula and check is a lambda of `x`, saved as its source. A
+  file from an older version (expression text, per-label checks, `{"python": ...}` entries)
+  loads and is converted; `allow_code` is ignored. Calculate files you didn't write in a sandbox.

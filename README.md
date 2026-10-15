@@ -39,11 +39,12 @@ model keeps them consistent, and each value traces back to its source.
   number.
 - Letting AI agents extract values into a fixed definition that rejects values that do not fit.
 - Reviewing a model: `explain()` shows the cells each check and formula read, back to the entered
-  values.
+  values, and `precedents()` / `dependents()` trace any cell as Excel does.
 
 ## Install
 
-Python 3.12 or later. No dependencies; the Excel export needs openpyxl.
+Python 3.12 or later. One dependency, [RestrictedPython](https://github.com/zopefoundation/RestrictedPython),
+which runs formulas safely; the Excel export needs openpyxl.
 
 ```bash
 pip install pytracemodel
@@ -62,7 +63,8 @@ import tracemodel as tm
 | **Coords** | The labels along a dimension. A value is addressed by one label per dimension: `{"region": "/north", "period": "Q1"}`. |
 | **Hierarchy** | A dimension whose labels are paths: `/`, `/north`, `/north/boston`. A path's parent is the path minus its last segment. |
 | **Item** | A named measure (e.g. `revenue`) declared over some dimensions, with a data type and attributes such as units. Holds no numbers until values are set. |
-| **Check** | A data quality rule: a condition over items (comparisons joined with and / or / not), run once for each label of the dimensions you choose. |
+| **Formula** | A Python lambda of `x`, the cell being calculated: `lambda x: x["revenue"] * 0.6`. The same lambda is checked, saved and loaded. |
+| **Check** | A data quality rule: a lambda of `x` that returns `True` or `False`, run once for each label of the dimensions you choose. |
 | **Value** | One number for one item at full coords, with a `source` saying where it came from. |
 
 ## Workflow
@@ -112,8 +114,8 @@ model.add_item("stores", dims=("period",), dtype=int, attrs={"units": "stores"})
 # 3. Data quality: total revenue equals north plus south, in every period
 model.add_check("DQ-1",
     coords={"period": tm.ANY},
-    expect=abs(
-        model["revenue"]["/"] - (model["revenue"]["/north"] + model["revenue"]["/south"])
+    expect=lambda x: abs(
+        x["revenue"]["/"] - (x["revenue"]["/north"] + x["revenue"]["/south"])
     ) <= 0.5,                                  # within 0.5 (USD thousands) for rounding
     description="Total revenue = North + South",
 )
@@ -142,11 +144,11 @@ model = tm.Model()
 | Call | Does |
 | --- | --- |
 | `add_dimension(name, coords)` | `coords` is a list of coord entries (see Coord entries), a `tm.Hierarchy`, or a time spine, `tm.period_range(...)` (see Time dimensions). Re-adding an identical dimension is a no-op; a different one under the same name raises `DefinitionError`. |
-| `add_coords(name, entries)` | Appends labels to a dimension, e.g. forecast periods (entries as in Coord entries; a hierarchy path needs its parent). Items get the new cells, not entered. Checks given `tm.ANY` for that dimension are re-expanded to cover the new labels; checks with listed labels keep them. A function check loaded from a file can't build conditions for new labels of its parameter's dimension: `add_coords` raises and changes nothing, and you re-add the check with its function. Labels already there with the same entry are a no-op. Labels can't be removed or reordered. A time dimension takes the periods that continue it: `add_coords("month", tm.period_range("2027-01", periods=12))`. |
+| `add_coords(name, entries)` | Appends labels to a dimension, e.g. forecast periods (entries as in Coord entries; a hierarchy path needs its parent). Items get the new cells, not entered. Checks given `tm.ANY` or `tm.filter_by_attrs(...)` for that dimension are re-expanded to cover the new labels; checks with listed labels keep them. Labels already there with the same entry are a no-op. Labels can't be removed or reordered. A time dimension takes the periods that continue it: `add_coords("month", tm.period_range("2027-01", periods=12))`. |
 | `remove_dimension(name)` | Removes a dimension that no item uses; raises `DefinitionError` naming the items that do. |
-| `add_item(name, dims, dtype=float, attrs=None, formula=None, description=None)` | `dims`: tuple of declared dimension names. `dtype`: `int`, `float`, `date` or `datetime` (as types or names; see Dates). `attrs`: free-form dict; `units` and `scale` are shown in tables. By convention `period_type` is `"duration"` (a flow over the period) or `"instant"` (a balance at its end), for whoever reads the model; the library doesn't act on it. `formula`: an expression that calculates the item's cells, or a Python function of the cell (see Formulas). `description`: the item's title as people read it, e.g. the caption the source prints ("Lease-related assets and liabilities"), as a dimension label has one; `name` stays the code formulas use. Re-adding an identical item is a no-op. |
-| `add_check(id, expect, coords=None, description=None, severity="error")` | `expect`: a condition, a function of dims that returns one, or a value check: a function of `x` that returns `True` or `False` (see Data quality). `coords`: `{dim: tm.ANY \| tm.filter_by_attrs(...) \| label \| [labels]}` — the check runs once per combination. Every dimension a cell leaves open must appear here, and every dimension here must be left open by some cell (otherwise `DefinitionError`). When every cell fixes all its coords, omit `coords`: the check runs once. `severity`: `"error"` or `"warning"`; a failing warning is reported but doesn't make `report.ok` false. An existing `id` is replaced. |
-| `model[item]` | An expression for the whole item; see Expressions. |
+| `add_item(name, dims, dtype=float, attrs=None, formula=None, description=None)` | `dims`: tuple of declared dimension names. `dtype`: `int`, `float`, `date` or `datetime` (as types or names; see Dates). `attrs`: free-form dict; `units` and `scale` are shown in tables. By convention `period_type` is `"duration"` (a flow over the period) or `"instant"` (a balance at its end), for whoever reads the model; the library doesn't act on it. `formula`: a lambda of `x`, or its source text, that calculates the item's cells (see Formulas). `description`: the item's title as people read it, e.g. the caption the source prints ("Lease-related assets and liabilities"), as a dimension label has one; `name` stays the code formulas use. Re-adding an identical item is a no-op. |
+| `add_check(id, expect, coords=None, description=None, severity="error")` | `expect`: a lambda of `x`, or its source text, that returns `True` or `False` (see Data quality). `coords`: `{dim: tm.ANY \| tm.filter_by_attrs(...) \| label \| [labels]}` — the check runs once per combination. Every dimension a cell it reads leaves open must appear here, and every dimension here must be left open by some cell (otherwise `DefinitionError`). When every cell fixes all its coords, omit `coords`: the check runs once. `severity`: `"error"` or `"warning"`; a failing warning is reported but doesn't make `report.ok` false. An existing `id` is replaced. |
+| `model[item]` | The item's cells, to show as a table; see Selecting and showing cells. |
 | `model.item(name)` | The declared `Item`; raises `UnknownItem`. |
 | `model.dimensions`, `model.items`, `model.checks` | Dicts by name/id of `Dimension`, `Item` and `Check` objects (below). |
 | `print(model)` | A summary: each dimension with every label and its description and attrs, each item with its dims, dtype, attrs and formula, each check with its condition and the dims it runs over, and the number of values. |
@@ -157,17 +159,19 @@ model = tm.Model()
 | --- | --- |
 | `Dimension` | `name`, `coords` (tuple of labels), `hierarchy` (the `tm.Hierarchy`, or `None` for a plain list), `description(label)`, `attrs(label)` |
 | `Item` | `name`, `dims`, `dtype`, `attrs`, `formula` (or `None`), `unit_label` (`units` and `scale` joined) |
-| `Check` | `id`, `expect`, `coords` (dim → labels it runs over), `description`, `severity`, `runs()` (the coords of each run), `params` (the dims a function `expect` takes), `condition(at)` (the condition a run tests) |
+| `Check` | `id`, `expect` (a `tm.Formula`), `coords` (dim → labels it runs over), `description`, `severity`, `runs()` (the coords of each run) |
+| `Formula` | `source` (`"lambda x: x['revenue'] * 0.6"`), `env` (the closure values it uses), `repr()` (its body); `tm.Formula("lambda x: ...")` checks and compiles one |
 
 **Values**
 
 | Call | Does |
 | --- | --- |
-| `set_value(line_item, coords, value, source)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers; date items take a date or an ISO string), or `tm.NIL` (see below), or an expression: a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
+| `set_value(line_item, coords, value, source)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers; date items take a date or an ISO string), or `tm.NIL` (see below), or a lambda (or its text, `"lambda x: ..."`): a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
 | `get(line_item, **coords)` | The value at full coords: a number, or a date for a date item (0 for a nil cell; `tm.NIL` for a nil date). |
 | `entry(line_item, **coords)` | With full coords: an `Entry` (`value`, `source`, `history`). With fewer coords: a `Table` of matching entries. |
 | `table(line_item)` | The item as a grid: `period` across (if the item has it), other dims down. Cells not entered are blank; nil cells show `—`. |
-| `evaluate(expr)` | Evaluates an expression for every combination of its open dims: a `Table`, or a number when no dim is open. |
+| `evaluate(formula)` | Runs a lambda of `x` for every combination of the dims its cells leave open, e.g. `model.evaluate(lambda x: x["revenue"] - x["cost"])`: a `Table`, or a number when no dim is open. |
+| `precedents(line_item, deep=False, **coords)` / `dependents(...)` | What a cell's formula can read, and what can read the cell; see Tracing. |
 | `check()` | Runs every check; returns a `Report`. |
 | `transaction()` | Groups changes; see Transactions. |
 | `to_jsonl(path)` / `load_jsonl(path)` | Save / load values, one JSON object per value. Loading validates like `set_value`, in one transaction: a bad row loads nothing. |
@@ -178,8 +182,8 @@ model = tm.Model()
 | Call | Does |
 | --- | --- |
 | `save(path)` | Writes the definition (dimensions, items, formulas, checks) to a JSON file. Values are not included; save them with `to_jsonl`. |
-| `tm.load(path, allow_code=False)` | A model from a file written by `save`. Formulas saved as Python functions are code: they load only with `allow_code=True`. |
-| `to_dict()` / `tm.Model.from_dict(data, allow_code=False)` | The same, as plain data. |
+| `tm.load(path, formulas="on")` | A model from a file written by `save`. Formulas are checked and compiled as when they were added; `formulas="off"` keeps them as text and runs none (see Saving a model). |
+| `to_dict()` / `tm.Model.from_dict(data, formulas="on")` | The same, as plain data. |
 
 **Source.** Every value needs a `source` dict with `document`, `url` and `section`;
 `page` and `quote` are optional. Other keys are rejected.
@@ -210,24 +214,27 @@ tm.Hierarchy(["/", "/a", ("/a/x", "Description"), ("/b", "B", {"note": "..."})])
 - `h.parent(path)`, `h.children(path)`, `h.description(path)` (falls back to the last path segment).
 - Reach it with `model.dimensions["region"].hierarchy`.
 
-### Expressions
+### Selecting and showing cells
 
-`model["revenue"]` is the whole item. Fix coords by label or by name:
+`model["revenue"]` is the whole item. Fix coords by label or by name; displayed in
+IPython/Jupyter, it shows as a table:
 
 ```python
 model["revenue"]["/north"]                       # the label must belong to exactly one of the item's dims
 model["revenue"].sel(region="/north", period="Q1")
+model["revenue"]["/"].lag("period")              # each period's previous one; the first shows blank
 ```
 
-Expressions combine with `+ - * /`, unary `-` and numbers, and `sum([...])` adds a list of them.
-Dimensions broadcast by name, as in xarray: the result has one value per combination of the dims
-its cells leave open.
+To compute with cells, write a lambda of `x` (see Formulas); `model.evaluate` runs one for
+every combination of the dims its cells leave open, as xarray broadcasts by dimension name:
 
 ```python
-model["revenue"] / model["revenue"]["/"]        # each region's share, by region and period
-model["revenue"]["/"] / model["stores"]         # revenue per store, by period
-sum(model["revenue"][r] for r in ["/north", "/south"])   # displays as revenue['/north'] + revenue['/south']
+model.evaluate(lambda x: x["revenue"] / x["revenue"]["/"])     # each region's share, by region and period
+model.evaluate(lambda x: x["revenue"]["/"] / x["stores"])      # revenue per store, by period
 ```
+
+Arithmetic on `model["revenue"]` itself raises `DefinitionError`, with the lambda to write:
+`model["revenue"] * 0.6` says `formula=lambda x: x['revenue'] * 0.6`.
 
 **Earlier and later labels.** `lag` and `lead` (named as in SQL's window functions) read the
 same item a number of labels earlier or later along a plain dimension; `shift` is the
@@ -243,73 +250,50 @@ A check that lags must leave the first label out of its coords, because it has n
 it; a lead leaves out the last. Slice the dimension's labels, like any Python tuple:
 
 ```python
-rev = model["revenue"]
 model.add_check("GROWTH-1",
     coords={"period": model.dimensions["period"].coords[1:]},   # every period but the first
-    expect=rev["/"] >= rev["/"].lag("period"),
+    expect=lambda x: x["revenue"]["/"] >= x["revenue"]["/"].lag("period"),
     description="Total revenue doesn't shrink",
 )
 # runs once, period=Q2: revenue['/'] at Q2 >= revenue['/'] at Q1
 ```
 
 With `coords={"period": tm.ANY}` instead, `add_check` raises `DefinitionError`: there is no
-period before Q1, and the message suggests `coords[1:]`. Displayed, a lag shows the first
-period blank. Lag and lead work on plain dimensions only: a hierarchy has no previous line.
-
-Nothing is computed when an expression is built. It is evaluated when a check runs, when
-you call `model.evaluate(expr)`, or when you display it in IPython/Jupyter (shown as a table).
-A missing value or a division by zero shows as blank.
+period before Q1, and the message suggests `coords[1:]`. Lag and lead work on plain dimensions
+only: a hierarchy has no previous line.
 
 ### Data quality
 
-A check's `expect` is a condition: a comparison of expressions, or comparisons joined together.
+A check's `expect` is a lambda of `x`, the run, that returns `True` or `False`. It runs once per
+combination of the labels in `coords`; `x["item"]` reads an item at the run's labels, and any
+Python comparison works:
 
 | Write | Holds when |
 | --- | --- |
-| `a < b`, `a <= b`, `a > b`, `a >= b`, `a != b` | the comparison is true |
-| `a == b` | equal |
-| `cond1 & cond2`, `cond1 \| cond2`, `~cond` | both hold / at least one holds / it does not hold |
-| `x.is_nil()` | the cell was entered as `tm.NIL`, not as a number such as 0 (not entered: missing) |
+| `a < b`, `a <= b`, `a > b`, `a >= b`, `a == b`, `a != b` | the comparison is true |
+| `0 <= a <= 1` | both comparisons hold |
+| `a and b`, `a or b`, `not a` | both hold / at least one holds / it does not hold |
+| `x["cost"].is_nil()` | the cell was entered as `tm.NIL`, not as a number such as 0 (not entered: missing) |
+| `max`, `min`, `abs`, `round`, `sum`, `any`, `all`, `a if c else b` | as in Python |
 
-A tolerance is an expression too: `abs(a - b) <= 0.5` allows a difference of 0.5 in the
-item's units, and `abs(a - b) <= 0.001 * abs(a)` allows 0.1%. Comparisons allow for float
-rounding (about one part in a billion), so `abs(1_000.2 - 1_000) <= 0.2` holds.
+A tolerance is arithmetic too: `abs(a - b) <= 0.5` allows a difference of 0.5 in the item's
+units, and `abs(a - b) <= 0.001 * abs(a)` allows 0.1%. Comparisons allow for float rounding
+(about one part in a billion), so `abs(1_000.2 - 1_000) <= 0.2` holds; a date never compares
+with a number (`DefinitionError`).
 
 ```python
 model.add_check("SIGN-1", coords={"region": tm.ANY, "period": tm.ANY},
-    expect=model["revenue"] >= 0)
-
-share = model["revenue"]["/north"] / model["revenue"]["/"]
+    expect=lambda x: x["revenue"] >= 0)
 model.add_check("MIX-1", coords={"period": tm.ANY},
-    expect=(share >= 0.4) & (share <= 0.7))
+    expect=lambda x: 0.4 <= x["revenue"]["/north"] / x["revenue"]["/"] <= 0.7)
 ```
 
-Python can't redefine `and`, `or`, `not` or chained comparisons, so they raise an error:
-write `(x >= 0) & (x <= 1)`, not `0 <= x <= 1` or `x >= 0 and x <= 1`. The parentheses are
-required, because `&` and `|` bind tighter than comparisons.
-
-A value check allows them. Pass a function of `x`, as in formulas. It runs once per run, with
-numbers. `x["item"]` reads an item at the run's coords; `x.coords` and `x.attrs(dim)` work. It
-returns `True` or `False`. `and`, `or`, `not`, chained comparisons, `max`, `min` and `if`/`else`
-all work:
-
-```python
-model.add_check("MARGIN-1", coords={"period": tm.ANY},
-    expect=lambda x: 0 <= x["margin"] <= 1)
-```
-
+- A check whose body is one comparison (`a <= b`) reports left, right and diff for each run.
 - The cells it reads are traced. A missing cell fails the run and is listed in `missing`.
 - An error, or a return value that isn't `True` or `False`, fails the run. The result's `error`
-  says why.
-- A function that only uses expressions (`lambda x: x["margin"] >= 0`) is stored as a condition,
-  so it keeps left, right and diff.
-- Saving stores the function's source, as for formula functions. Loading needs
-  `allow_code=True`.
-- The parameter `x` makes a value check, so a dim named `x` can't be a function check parameter.
-
-Displayed, a comparison shows left, right, diff and the result for each combination of its open
-dims; a joined condition shows each part's result and the whole. A condition has no single truth
-value, so `if a == b:` raises. A missing value or a division by zero fails the check.
+  says why. An unknown item or label is caught when the check is added.
+- In a check, `x` is the run, not a cell: `x["revenue"]` reads a cell, `x.coords` gives the
+  run's labels, `x.attrs(dim)` their attrs.
 
 `tm.ANY` in check coords means "every label of that dimension".
 `tm.filter_by_attrs(kind="forecast")` (named after xarray's `Dataset.filter_by_attrs`) means
@@ -323,39 +307,32 @@ model.add_dimension("year", [("FY2024", None, {"kind": "actual"}),
                              ("FY2025", None, {"kind": "actual"}),
                              ("FY2026", None, {"kind": "forecast"})])
 model.add_item("sales", dims=("year",), formula=lambda s: s.lag("year") * 1.03)
-model.add_check("FC-SALES", coords={"year": FORECAST}, expect=model["sales"] > 0)
+model.add_check("FC-SALES", coords={"year": FORECAST}, expect=lambda x: x["sales"] > 0)
 model.add_coords("year", [("FY2027", None, {"kind": "forecast"})])   # FC-SALES now runs FY2026, FY2027
 model.check().filter(year=FORECAST).ok                               # only the forecast years
 ```
 
-**Function checks.** When the rule itself depends on a label, such as "a region equals the sum
-of *its* children", pass a function as `expect`. Name each parameter after a dimension in
-`coords`; the check calls it once per combination of those labels and tests the condition it
-returns. Dimensions you don't name run as usual, with their cells left open.
+**Rollups.** When a rule depends on a hierarchy, such as "a region equals the sum of *its*
+children", read the run's children with `x.children(dim)`. It covers labels added later:
 
 ```python
-rev = model["revenue"]
-regions = model.dimensions["region"].hierarchy
-
 model.add_check("ROLLUP-1",
     coords={"region": ["/", "/north"], "period": tm.ANY},
-    expect=lambda region: abs(rev[region] - sum(rev[c] for c in regions.children(region))) <= 0.5,
+    expect=lambda x: abs(x["revenue"] - sum(x["revenue"].sel(region=c) for c in x.children("region"))) <= 0.5,
     description="Each region = the sum of its children",
 )
-# region="/":      abs(revenue['/'] - (revenue['/north'] + revenue['/south'])) <= 0.5
-# region="/north": abs(revenue['/north'] - (revenue['/north/boston'] + revenue['/north/portland'])) <= 0.5
+# region="/":      revenue['/'] against revenue['/north'] + revenue['/south']
+# region="/north": revenue['/north'] against revenue['/north/boston'] + revenue['/north/portland']
 ```
 
-The functions are called when the check is added, so every run still has a formula, the cells it
-reads, and left and right in the report. A parameter that isn't a dimension in `coords`, or a
-return value that isn't a condition, raises `DefinitionError` there. Parameters with a default
-value (`lambda region, h=regions: ...`) are not dimensions; use them to bind values in a loop.
+`x.parent(dim)` is the label above (`None` at the top), and `x.labels(dim)` every label of a
+dimension, for one that isn't a hierarchy.
 
 ### Results and display
 
 - `Report`: `ok` (no failing error check), `filter(check=None, **coords)` (the runs of one check and/or on some labels: a label, a list, `tm.ANY` or `tm.filter_by_attrs(...)`; returns a `Report`), `results`, `failures` (every run that didn't pass), `errors` and `warnings` (failures by severity), `explain(check_id=None)` (each run with every cell it read), `table()`, `show()`.
 - Each result: `check`, `at` (the coords of the run), `lhs`, `rhs`, `diff`, `passed`, `cells`, `missing`, `error`.
-- For a value check, `lhs`, `rhs` and `diff` are `None`. `error` holds the error text when the function raised or didn't return a bool.
+- `lhs`, `rhs` and `diff` are set for a check that is one comparison, else `None`. `error` holds the error text when the check raised or didn't return a bool.
 - A run fails with `error` set, instead of `check()` raising, when a cell it reads can't be calculated: say a formula's `lag` before the first period, or an `int` formula that gives a fraction.
 - A missing value fails the check that reads it; it is never treated as 0.
 - Each run's result: `pass`, `FAIL`, `missing`, or for a warning check `warn` / `warn: missing`.
@@ -363,24 +340,15 @@ value (`lambda region, h=regions: ...`) are not dimensions; use them to bind val
 
 ### Formulas
 
-An item with `formula=` is calculated, not entered: each cell evaluates the formula at the
-cell's coords. Use it for numbers the source doesn't report, such as ratios, growth or
+An item with `formula=` is calculated, not entered. A formula is a lambda of `x`, the cell
+being calculated, run once per cell with numbers, so any Python expression works: `max`, `min`,
+`if`/`else`, `math`. Use it for numbers the source doesn't report, such as ratios, growth or
 recomputed figures:
 
 ```python
 model.add_item("avg_revenue_per_store", dims=("period",), attrs=USD_K,
-               formula=model["revenue"]["/"] / model["stores"])
-```
+               formula=lambda x: x["revenue"]["/"] / x["stores"])
 
-A cell is either **entered** with `set_value` (the last write wins) or **calculated** by its
-item's formula. An entered cell overrides the formula for that one cell, with a source, as in
-Anaplan; the entry has `overrides_formula=True`.
-
-**Formulas as Python functions.** A formula can be a function of `x`, the cell being
-calculated. It is called once per cell, with numbers, so any Python works: `max`, `min`,
-`if`/`else`, `math`:
-
-```python
 FLOOR = 25_000                                   # minimum cash
 model.add_item("cash", dims=("period",), attrs=USD_K)
 model.add_item("revolver_draw", dims=("period",), attrs=USD_K,
@@ -388,45 +356,51 @@ model.add_item("revolver_draw", dims=("period",), attrs=USD_K,
 # cash 40,000 → draw 0;  cash 18,000 → draw 7,000
 ```
 
-| In the function | Reads |
+A cell is either **entered** with `set_value` (the last write wins) or **calculated** by its
+item's formula. An entered cell overrides the formula for that one cell, with a source, as in
+Anaplan; the entry has `overrides_formula=True`.
+
+| In the lambda | Reads |
 | --- | --- |
 | `x["cash"]` | item `cash` at this cell's coords (a label of the item itself if no item has that name) |
-| `x["cash"]["/north"]`, `x["cash"].sel(region="/north")` | `cash` with a coord fixed |
+| `x["cash"]["/north"]`, `x["cash"].sel(region="/north")` | `cash` with a coord fixed (on a cell reached from `x`, `[...]` is always a label) |
 | `x.lag("period")`, `x["cash"].lag("period")` | this item / `cash` one period earlier |
 | `x.coords` | this cell's labels, e.g. `{"period": "Q2"}` |
 | `x.attrs("period")` | the attrs of this cell's period label, e.g. `{"kind": "forecast"}` |
-| `x.is_nil()` | whether the cell read was entered as `tm.NIL` |
+| `x.children("region")`, `x.parent("region")`, `x.labels("line")` | labels from the dimensions (see Rollups) |
+| `x.period`, `x.periods["month"]` | the cell's period, with its dates (see Time dimensions) |
+| `x["cash"].is_nil()` | whether the cell read was entered as `tm.NIL` |
 | `x["start"].dt.month`, `.dt.to_period("M")` | fields of a date cell (see Dates) |
 
 **One formula for many lines.** When an item spans lines that each need their own formula (a
-balance sheet over a `bs_line` hierarchy), give the item one function that picks by label.
+balance sheet over a `bs_line` hierarchy), give the item one lambda that picks by label.
 Entered actuals still win; returning `None` leaves a cell missing:
 
 ```python
-LINES = {
-    "/current/receivables": lambda x: x["sales"] * x["dso"] / 365,
-    "/current/inventory":   lambda x: x["cogs"] * x["dio"] / 365,
-    "/current":             lambda x: x["/current/receivables"] + x["/current/inventory"],
-}
 model.add_item("balance_sheet", dims=("bs_line", "period"),
-    formula=lambda x: LINES[x.coords["bs_line"]](x)
-                      if x.attrs("period").get("kind") == "forecast" and x.coords["bs_line"] in LINES
-                      else None)
+    formula=lambda x: None if x.attrs("period").get("kind") != "forecast"
+    else x["sales"] * x["dso"] / 365 if x.coords["bs_line"] == "/current/receivables"
+    else x["cogs"] * x["dio"] / 365 if x.coords["bs_line"] == "/current/inventory"
+    else x["/current/receivables"] + x["/current/inventory"] if x.coords["bs_line"] == "/current"
+    else None)
 ```
 
 Forecast periods added later with `add_coords` are calculated too. (`x["/current/receivables"]`
 reads a line of the item itself, since no item has that name.)
 
-- `x` and what it reads behave as their values: numbers, or dates for date items. A cell that isn't entered makes the whole cell
-  missing, as for expressions; a division by zero too.
-- If the function only uses expressions (`lambda x: x["cash"] - FLOOR`), it is stored as an
-  expression: `print(model)` shows `cash - 25000`, and circular formulas are rejected when it is
-  added. Otherwise `print(model)` shows the function's source, the cells each cell read are
-  traced when it runs, and a formula that reads itself raises `DefinitionError` when calculated.
-- Saving stores the function's source and the values of the names it uses (`FLOOR`, modules,
-  numbers, strings, lists, dicts, dates). A function typed at a plain `python` prompt has no source and
-  can't be saved. Loading runs the code, so it needs `tm.load(path, allow_code=True)` and
-  `load_jsonl(path, allow_code=True)`; run files you don't trust in a sandbox.
+- `x` and what it reads behave as their values: numbers, or dates for date items. A cell that
+  isn't entered makes the whole cell missing; a division by zero too.
+- A formula is checked when it is added: an unknown item or label, a dim left open, or a cell
+  that would depend on itself raises `DefinitionError`. Both arms of an `if`/`else` on a value
+  count, since either may run. Inside a transaction these are checked at commit, so a formula
+  may read an item added later in it.
+- A formula is its source text: the lambda's source is read when it is added, and that text is
+  what runs, is shown (`print(model)` shows `max(0, FLOOR - x['cash'])`) and is saved. The
+  lambda itself is never called. Pass the text instead when there is no source file to read
+  (a lambda typed at a plain `python` prompt): `formula="lambda x: max(0, 25_000 - x['cash'])"`.
+- The names it uses from where it is written (`FLOOR`) are copied as data: numbers, strings,
+  lists and dicts of them, and dates. A closure over the model or its cells raises, saying to
+  read cells through `x`. See What a formula may use.
 
 **Projections: reading the item's own earlier cells.** Pass the formula as a function of the
 item's cells. Entered actuals win; the later periods are calculated, each from the one before:
@@ -467,8 +441,7 @@ second period on (`coords={"period": PERIODS[1:]}`). The first period's beginnin
 nothing in the model; that is expected. When several items read the opening balance, make it
 an item with no dims (`dims=()`), entered once.
 
-**A formula for one cell.** `set_value` also takes an expression, or a function of the item's
-cells, as the value: that cell is calculated by its own formula, sourced like any value. Use it
+**A formula for one cell.** `set_value` also takes a lambda, or its text, as the value: that cell is calculated by its own formula, sourced like any value. Use it
 when one cell follows different terms, such as a contract with its own escalator:
 
 ```python
@@ -502,7 +475,7 @@ own under one item formula; a cell formula is for a cell whose formula really is
 - Checks read calculated cells like any other; `explain()` lists the cells each formula read,
   back to the entered ones.
 - `entry()` shows a cell formula as `= fee.lag('year') * 1.1`; the values file saves it as
-  `"formula"` text instead of `"value"`.
+  `"formula": "lambda fee: fee.lag('year') * 1.1"` instead of `"value"`.
 
 A number the source reports is an input, even when it equals other numbers' arithmetic (a
 subtotal, gross margin on the income statement): enter it with its source and add a check
@@ -533,9 +506,9 @@ Calculated cells are cached, so a long chain of formulas (years of monthly perio
 reading the one before) is calculated once per cell. As a spreadsheet does, the model records
 which cells each formula read; a new value recalculates only the cells that read it, directly
 or through other formulas, and `check()` re-runs only the runs that read those. Changing a
-definition (an item, a dimension, its labels) recalculates everything. A function formula should
-depend only on the cells it reads and its arguments: a global it reads that later changes isn't
-noticed.
+definition (an item, a dimension, its labels) recalculates everything. The values a formula
+uses from where it was written are copied when it is added, so changing them later doesn't
+change the formula.
 
 ### Dates
 
@@ -562,14 +535,14 @@ is a date. Comparisons are exact; there is no tolerance for dates.
 
 ```python
 model.add_item("deadline", ("milestone",), dtype=date,
-               formula=model["baseline_date"] + timedelta(days=14))      # an expression
+               formula=lambda x: x["baseline_date"] + timedelta(days=14))
 model.add_check("ON-TIME", coords={"milestone": tm.ANY},
-                expect=model["forecast_date"] <= model["baseline_date"] + timedelta(days=30))
+                expect=lambda x: x["forecast_date"] <= x["baseline_date"] + timedelta(days=30))
 model.add_item("slip_days", ("milestone",), dtype=int,
                formula=lambda x: (x["forecast_date"] - x["baseline_date"]).days)
 ```
 
-In a function formula or value check, `.dt` gives a date cell's fields with pandas' names:
+In a formula or check, `.dt` gives a date cell's fields with pandas' names:
 `year`, `month`, `day`, `quarter`, `dayofweek` (Monday is 0), `dayofyear`, `days_in_month`,
 `is_month_start`, `is_month_end`, `is_quarter_start`, `is_quarter_end`, `is_year_start`,
 `is_year_end`, `hour`, `minute`, `second`, `date`, `strftime(fmt)`, and `to_period(freq)`: the
@@ -584,7 +557,7 @@ payment:
 ```python
 model.add_item("payment", ("contract", "milestone"), formula=lambda x: 0)   # 0 unless the terms say so
 model.add_item("planned_cost", ("contract", "month"), formula=lambda x: sum(
-    x["payment"].sel(milestone=ms) for ms in model.dimensions["milestone"].coords
+    x["payment"].sel(milestone=ms) for ms in x.labels("milestone")
     if x["forecast_date"].sel(milestone=ms).dt.to_period("M") == x.coords["month"]))
 ```
 
@@ -595,7 +568,7 @@ model.add_item("planned_cost", ("contract", "month"), formula=lambda x: sum(
 - `tm.NIL` on a date item means there is no date (a milestone that was dropped). It doesn't
   count as 0: test `is_nil()` before computing with it, or the calculation raises.
 - Tables show ISO dates and timedeltas in days (`18 days`). The values file writes dates as ISO
-  strings; definition files write `date('2026-03-31')` and `timedelta(days=30)` in expressions.
+  strings; a date a formula uses from where it was written is saved as `{"$date": "2026-03-31"}`.
 
 ### Time dimensions
 
@@ -620,7 +593,7 @@ model.add_dimension("period", tm.period_range("2024", "2025", freq="Y-SEP", labe
   `start_time` and `end_time` (dates; the period includes both), `days`, `year` (a fiscal
   year for `Q-`/`Y-` frequencies), `quarter`, `month`, `asfreq(freq)` and `overlap(start, end)`.
 
-In a function formula or value check, `x.period` is the cell's period (`x.periods["month"]` when
+In a formula or check, `x.period` is the cell's period (`x.periods["month"]` when
 the cell has several time dims). A date compares with it: `d in x.period` falls within it,
 `d < x.period` is before it, `d > x.period` after it. `overlap` gives the share of the period's
 days in a date range, which prorates and spreads:
@@ -633,8 +606,7 @@ model.add_item("milestone", ("month",),
 ```
 
 The definition file saves the spine as `"time": {"freq": "M", "first": "2026-01"}` beside the
-labels, so a model with time dimensions loads without `allow_code` (formulas that use
-`x.period` are functions, so they need it). Periods are calendar months, quarters and years;
+labels. Periods are calendar months, quarters and years;
 52/53-week fiscal years (Apple's ends on the last Saturday of September) aren't modelled.
 
 ### Not entered vs nil
@@ -654,7 +626,7 @@ model.set_value("cost", coords={"segment": "/corporate", "period": "FY2025"}, va
 | In tables and `explain()` | blank / `MISSING` | `—` |
 | `get()` | raises `MissingValue` | 0 (the entry's `value` is `tm.NIL`) |
 | Values file | no row | `"value": null` |
-| In a condition | `x.is_nil()` is missing | `x.is_nil()` holds |
+| In a formula or check | `x["cost"].is_nil()` is missing | `x["cost"].is_nil()` holds |
 
 Don't enter 0 for a "—": a real 0 and a nil cell are different facts.
 
@@ -665,6 +637,23 @@ cells by themselves. Only a check that reads a cell reports it as `missing`; to 
 of a check, give the check `coords` (a list of labels, or `tm.filter_by_attrs(...)`). Don't add
 lines or skip a period to avoid empty cells, and don't enter nil for a cell the source doesn't
 show at all.
+
+### Tracing: precedents and dependents
+
+As Excel's Trace Precedents and Trace Dependents do, a model answers what a cell reads and what
+reads it, from the formulas' source, before anything is calculated:
+
+```python
+model.precedents("net_income", period="FY2025")             # [ebit[period=FY2025], tax_rate[period=FY2025]]
+model.dependents("revenue", period="FY2025")                # formula cells and check runs that read it
+model.precedents("net_income", deep=True, period="FY2025")  # each with its own, down to the entered cells
+```
+
+- Each is a list of `tm.Trace`: `name` (the item, or the check id), `coords`, `kind` (`"cell"` or
+  `"check"`), `children` (with `deep=True`), `flatten()`; `print()` shows the tree indented.
+- Both arms of an `if`/`else` on a value count, so precedents can list a cell a run doesn't read;
+  `report.explain()` lists the cells each run did read.
+- An entered cell has no precedents, even when its item has a formula.
 
 ### Errors
 
@@ -693,18 +682,39 @@ model.load_jsonl("retail.values.jsonl")
 
 - The definition and the values are separate files, as in XBRL (taxonomy vs instance): one
   agent defines the model, another enters values against it.
-- Expressions are saved as the text `print(model)` shows, e.g.
-  `"expect": "abs(revenue['/'] - (revenue['/north'] + revenue['/south'])) <= 0.5"`.
-  Loading parses that text with Python's `ast` and accepts only the expression grammar (item
-  names, `["label"]`, `.sel()`, `.lag()`, `.lead()`, `.shift()`, `.is_nil()`, `abs()`, numbers,
-  `date('...')`, `datetime('...')`, `timedelta(...)`, `+ - * /`, one comparison, `& | ~`). Nothing is evaluated as code, so a model file from
-  anyone is safe to load.
-- A function check is saved as the condition it built for each label (`expect_by_label`); the
-  function itself isn't needed again. `tm.ANY` is saved as `"ANY"`.
-- Item names must be Python identifiers (`add_item` checks), and attrs must hold JSON values.
+- A formula or check is saved as its lambda's source, with the values it uses beside it:
+  `"formula": "lambda x: max(0, FLOOR - x['cash'])", "env": {"FLOOR": 25000}`. Loading checks it
+  against the formula allow-list and compiles it with RestrictedPython, as `add_item` does;
+  nothing else in the file runs, and `allow_code` isn't needed (it is accepted and ignored, with
+  a `DeprecationWarning`).
+- Files saved by earlier versions load: expression text (`"cost * 0.6"`), checks saved per
+  label (`expect_by_label`) and `{"python": ...}` formulas are converted to lambdas, and saving
+  again writes the lambdas. A saved formula that used the model itself (`{"$model": true}`)
+  raises: rewrite it to read cells through `x`.
+- `tm.load(path, formulas="off")` loads the dimensions, items, checks and values but keeps
+  formulas as text: nothing is compiled or run, formula cells have no value and checks don't
+  run. Use it to read a file you don't trust; to calculate one, also run tracemodel in a sandbox
+  such as [gVisor](https://gvisor.dev) (issue #7). RestrictedPython is one barrier, not a sandbox.
+- `tm.ANY` is saved as `"ANY"`. Item names must be Python identifiers (`add_item` checks), and
+  attrs must hold JSON values.
 - Loading validates everything, as building the model in code does.
-- A formula written as a Python function is saved as `{"python": "<source>", "env": {...}}`;
-  loading it runs it, so it needs `allow_code=True`.
+
+### What a formula may use
+
+A formula is checked against an allow-list when it is added or loaded, then compiled with
+RestrictedPython, which routes every attribute, `[]` and loop through tracemodel's guards:
+
+- **Expressions only**: arithmetic, comparisons, `and`/`or`/`not`, `a if c else b`, calls,
+  `[]`, list, dict and set literals and comprehensions. No statements, `def`, nested `lambda`,
+  `:=`, f-strings, `*args`/`**kwargs`, `&`/`|`/`~` or `%` formatting of text.
+- **Names**: the lambda's parameter, comprehension variables, the values it was written with,
+  and `abs`, `all`, `any`, `bool`, `dict`, `enumerate`, `float`, `int`, `len`, `list`, `max`, `min`,
+  `range`, `reversed`, `round`, `sorted`, `sum`, `tuple`, `zip`, `date`, `datetime`, `timedelta`
+  and `math` (its arithmetic functions and constants).
+- **Attributes**: only those listed for each kind of object (`x`, periods, dates, `.dt`, text,
+  lists and dicts); never a name starting with `_`.
+- **Size**: text, lists and `range` up to 100,000 items, whole numbers up to about 3,000 digits,
+  a million loop steps per run; `9**9**9` or `[0] * 10**9` raise instead of hanging.
 
 ## Excel export
 
@@ -747,7 +757,7 @@ The workbook is a report: it holds values, not Excel formulas, and isn't read ba
 {"line_item": "revenue", "coords": {"region": "/north", "period": "Q1"}, "value": 700, "source": {"document": "Q2 sales report", "url": "https://example.com/q2.pdf", "section": "Table 1"}}
 ```
 
-A date is written as an ISO string (`"value": "2026-03-31"`). A nil cell is written with `"value": null`; a cell formula with `"formula": "<expression>"` instead of `"value"`. A value that overrides a formula adds `"overrides_formula": true`.
+A date is written as an ISO string (`"value": "2026-03-31"`). A nil cell is written with `"value": null`; a cell formula with `"formula": "lambda x: ..."` (and `"env"` when it uses values) instead of `"value"`. A value that overrides a formula adds `"overrides_formula": true`.
 
 ## Development
 
