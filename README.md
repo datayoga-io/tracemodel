@@ -529,8 +529,13 @@ with model.transaction():
 - Without `with`: `tx = model.transaction()`, then `tx.commit()` or `tx.rollback()`. One
   transaction at a time.
 
-Calculated cells are cached and the cache is cleared on any change, so a long chain of
-formulas (years of monthly periods, each reading the one before) is calculated once per cell.
+Calculated cells are cached, so a long chain of formulas (years of monthly periods, each
+reading the one before) is calculated once per cell. As a spreadsheet does, the model records
+which cells each formula read; a new value recalculates only the cells that read it, directly
+or through other formulas, and `check()` re-runs only the runs that read those. Changing a
+definition (an item, a dimension, its labels) recalculates everything. A function formula should
+depend only on the cells it reads and its arguments: a global it reads that later changes isn't
+noticed.
 
 ### Dates
 

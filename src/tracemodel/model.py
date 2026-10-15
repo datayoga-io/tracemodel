@@ -151,9 +151,15 @@ class Model:
         self.items: dict[str, Item] = {}
         self.checks: dict[str, Check] = {}
         self._entries: dict[tuple[str, tuple[str, ...]], Entry] = {}
-        self._cache: dict[tuple[str, tuple[str, ...]], Any] = {}  # calculated cells, until the next change
+        self._cache: dict[tuple[str, tuple[str, ...]], Any] = {}  # calculated cells, until an input changes
         self._evaluating: set[tuple[str, tuple[str, ...]]] = set()  # cells being calculated, to catch loops
+        self._calculating: list[tuple[str, tuple[str, ...]]] = []  # the same, innermost last: who is reading
         self._deps: dict[tuple[str, tuple[str, ...]], list] = {}  # what a function formula read, per cell
+        # cell -> its dependents: the cached cells and check runs that read it, so a new value
+        # recalculates only those (Excel's dependency tree)
+        self._dependents: dict[tuple[str, tuple[str, ...]], set[tuple[str, tuple[str, ...]]]] = {}
+        self._runs: dict[tuple[str, tuple[tuple[str, str], ...]], CheckResult] = {}  # check runs, until a read changes
+        self._run_dependents: dict[tuple[str, tuple[str, ...]], set[tuple[str, tuple[tuple[str, str], ...]]]] = {}
         self._tx: Transaction | None = None
 
     # == transactions =======================================================
@@ -174,8 +180,26 @@ class Model:
         return self._tx
 
     def _changed(self) -> None:
+        """The definition changed: forget everything calculated."""
         self._cache.clear()
         self._deps.clear()
+        self._dependents.clear()
+        self._runs.clear()
+        self._run_dependents.clear()
+
+    def _value_changed(self, key: tuple[str, tuple[str, ...]]) -> None:
+        """A cell's entry changed: forget the cells and check runs that read it, and theirs."""
+        stack, seen = [key], {key}
+        while stack:
+            k = stack.pop()
+            self._cache.pop(k, None)
+            self._deps.pop(k, None)
+            for run_key in self._run_dependents.pop(k, ()):
+                self._runs.pop(run_key, None)
+            for d in self._dependents.pop(k, ()):
+                if d not in seen:
+                    seen.add(d)
+                    stack.append(d)
 
     def _check_cycles_now_or_at_commit(self, name: str, starts: list[tuple[str, ...]] | None) -> None:
         """`starts` None: every cell of the item."""
@@ -435,6 +459,7 @@ class Model:
         id, run_over, params = check.id, check.coords, check.params
         if isinstance(check.expect, CellFunction):  # a value check: its reads are known only as it runs
             self.checks[id] = check
+            self._forget_runs(id)
             return check
         built = list(check.conditions.values()) if params else [check.expect]
         for cond in built:
@@ -464,11 +489,28 @@ class Model:
                         f"coords={{{e.dim!r}: model.dimensions[{e.dim!r}].coords{keep}}}"
                     ) from None
         self.checks[id] = check
+        self._forget_runs(id)
         return check
+
+    def _forget_runs(self, id: str) -> None:
+        for run_key in [r for r in self._runs if r[0] == id]:
+            del self._runs[run_key]
 
     def check(self) -> Report:
         """Run every check against the current values."""
-        return Report([self._run(check, at) for check in self.checks.values() for at in check.runs()], self)
+        return Report([self._cached_run(check, at) for check in self.checks.values() for at in check.runs()], self)
+
+    def _cached_run(self, check: Check, at: dict[str, str]) -> CheckResult:
+        """A run's result, kept until a cell it read changes."""
+        run_key = (check.id, tuple(at.items()))
+        result = self._runs.get(run_key)
+        if result is None:
+            result = self._run(check, at)
+            if result.error is None:  # a run that raised may not have read everything it needs
+                self._runs[run_key] = result
+                for r in result.cells:
+                    self._run_dependents.setdefault((r.item, tuple(r.coords.values())), set()).add(run_key)
+        return result
 
     def _run(self, check: Check, at: dict[str, str]) -> CheckResult:
         if isinstance(check.expect, CellFunction):
@@ -548,7 +590,7 @@ class Model:
         else:
             self._entries[key] = Entry(line_item, full, value, dict(source),
                                        overrides_formula=item.formula is not None)
-        self._changed()
+        self._value_changed(key)
         if _is_formula(value):
             try:
                 self._check_cycles_now_or_at_commit(line_item, [key[1]])
@@ -557,7 +599,7 @@ class Model:
                     del self._entries[key]
                 else:
                     self._entries[key] = previous
-                self._changed()
+                self._value_changed(key)
                 raise
 
     def get(self, line_item: str, **coords: str) -> float:
@@ -838,6 +880,8 @@ class Model:
         except OutOfRange:  # e.g. the first period's lag, when displaying
             return None
         labels = tuple(full[d] for d in cell.item.dims)
+        if self._calculating:  # a formula reads this cell: a change to it recalculates that formula's cell
+            self._dependents.setdefault((cell.item.name, labels), set()).add(self._calculating[-1])
         e = self._entries.get((cell.item.name, labels))
         if e is not None and not _is_formula(e.value):
             return e.value
@@ -875,6 +919,7 @@ class Model:
         if len(self._evaluating) >= _MAX_DEPTH:
             raise _Defer(key)
         self._evaluating.add(key)
+        self._calculating.append(key)
         try:
             if isinstance(formula, CellFunction):
                 reads: list = []
@@ -887,6 +932,7 @@ class Model:
                 value = self._try(formula, full)
         finally:
             self._evaluating.discard(key)
+            self._calculating.pop()
         value = _typed(value, self.items[key[0]], formula, full)
         self._cache[key] = value
         return value
