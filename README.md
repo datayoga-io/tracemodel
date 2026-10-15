@@ -141,8 +141,8 @@ model = tm.Model()
 
 | Call | Does |
 | --- | --- |
-| `add_dimension(name, coords)` | `coords` is a list of coord entries (see Coord entries) or a `tm.Hierarchy`. Re-adding an identical dimension is a no-op; a different one under the same name raises `DefinitionError`. |
-| `add_coords(name, entries)` | Appends labels to a dimension, e.g. forecast periods (entries as in Coord entries; a hierarchy path needs its parent). Items get the new cells, not entered. Checks given `tm.ANY` for that dimension are re-expanded to cover the new labels; checks with listed labels keep them. A function check loaded from a file can't build conditions for new labels of its parameter's dimension: `add_coords` raises and changes nothing, and you re-add the check with its function. Labels already there with the same entry are a no-op. Labels can't be removed or reordered. |
+| `add_dimension(name, coords)` | `coords` is a list of coord entries (see Coord entries), a `tm.Hierarchy`, or a time spine, `tm.period_range(...)` (see Time dimensions). Re-adding an identical dimension is a no-op; a different one under the same name raises `DefinitionError`. |
+| `add_coords(name, entries)` | Appends labels to a dimension, e.g. forecast periods (entries as in Coord entries; a hierarchy path needs its parent). Items get the new cells, not entered. Checks given `tm.ANY` for that dimension are re-expanded to cover the new labels; checks with listed labels keep them. A function check loaded from a file can't build conditions for new labels of its parameter's dimension: `add_coords` raises and changes nothing, and you re-add the check with its function. Labels already there with the same entry are a no-op. Labels can't be removed or reordered. A time dimension takes the periods that continue it: `add_coords("month", tm.period_range("2027-01", periods=12))`. |
 | `remove_dimension(name)` | Removes a dimension that no item uses; raises `DefinitionError` naming the items that do. |
 | `add_item(name, dims, dtype=float, attrs=None, formula=None, description=None)` | `dims`: tuple of declared dimension names. `dtype`: `int`, `float`, `date` or `datetime` (as types or names; see Dates). `attrs`: free-form dict; `units` and `scale` are shown in tables. By convention `period_type` is `"duration"` (a flow over the period) or `"instant"` (a balance at its end), for whoever reads the model; the library doesn't act on it. `formula`: an expression that calculates the item's cells, or a Python function of the cell (see Formulas). `description`: the item's title as people read it, e.g. the caption the source prints ("Lease-related assets and liabilities"), as a dimension label has one; `name` stays the code formulas use. Re-adding an identical item is a no-op. |
 | `add_check(id, expect, coords=None, description=None, severity="error")` | `expect`: a condition, a function of dims that returns one, or a value check: a function of `x` that returns `True` or `False` (see Data quality). `coords`: `{dim: tm.ANY \| tm.filter_by_attrs(...) \| label \| [labels]}` — the check runs once per combination. Every dimension a cell leaves open must appear here, and every dimension here must be left open by some cell (otherwise `DefinitionError`). When every cell fixes all its coords, omit `coords`: the check runs once. `severity`: `"error"` or `"warning"`; a failing warning is reported but doesn't make `report.ok` false. An existing `id` is replaced. |
@@ -591,6 +591,46 @@ model.add_item("planned_cost", ("contract", "month"), formula=lambda x: sum(
   count as 0: test `is_nil()` before computing with it, or the calculation raises.
 - Tables show ISO dates and timedeltas in days (`18 days`). The values file writes dates as ISO
   strings; definition files write `date('2026-03-31')` and `timedelta(days=30)` in expressions.
+
+### Time dimensions
+
+A time dimension's labels know their dates, as pandas' `PeriodIndex` does (and as Anaplan's and
+Pigment's time dimensions do). Build one with `tm.period_range`, named and used as pandas'
+`period_range`:
+
+```python
+model.add_dimension("month", tm.period_range("2026-01", "2027-12", freq="M"))   # "2026-01" ... "2027-12"
+model.add_dimension("quarter", tm.period_range("2026Q1", periods=8, freq="Q-SEP"))  # fiscal quarters
+model.add_dimension("period", tm.period_range("2024", "2025", freq="Y-SEP", label="FY{year}"))  # FY2024, FY2025
+```
+
+- **Frequencies** are pandas' period aliases: `"M"`; `"Q"` or `"Q-SEP"`, quarters of a fiscal
+  year ending in September; `"Y"` or `"Y-SEP"`. A fiscal year is named by the year it ends in:
+  with `"Y-SEP"`, `2025` runs from 1 October 2024 to 30 September 2025.
+- **Labels** are strings in pandas' form (`"2026-03"`, `"2026Q1"`, `"2026"`), or `label=` with
+  the fields `{year}`, `{quarter}` and `{month}`. Being strings, they work as any label: `lag`,
+  `sel`, checks, saving, Excel. `.dt.to_period("M")` on a date gives the same strings.
+- **Give two** of `start`, `end` and `periods`; `start` and `end` are period strings or dates.
+- **Each label is a `tm.Period`**: `model.dimensions["month"].period("2026-03")`, with
+  `start_time` and `end_time` (dates; the period includes both), `days`, `year` (a fiscal
+  year for `Q-`/`Y-` frequencies), `quarter`, `month`, `asfreq(freq)` and `overlap(start, end)`.
+
+In a function formula or value check, `x.period` is the cell's period (`x.periods["month"]` when
+the cell has several time dims). A date compares with it: `d in x.period` falls within it,
+`d < x.period` is before it, `d > x.period` after it. `overlap` gives the share of the period's
+days in a date range, which prorates and spreads:
+
+```python
+# a retainer from 16 March bills 16/31 of March's fee; a milestone lands in the month of its date
+model.add_item("retainer", ("month",), formula=lambda x: x["fee"] * x.period.overlap(x["start"], x["end"]))
+model.add_item("milestone", ("month",),
+               formula=lambda x: x["milestone_amount"] if x["milestone_date"] in x.period else 0)
+```
+
+The definition file saves the spine as `"time": {"freq": "M", "first": "2026-01"}` beside the
+labels, so a model with time dimensions loads without `allow_code` (formulas that use
+`x.period` are functions, so they need it). Periods are calendar months, quarters and years;
+52/53-week fiscal years (Apple's ends on the last Saturday of September) aren't modelled.
 
 ### Not entered vs nil
 

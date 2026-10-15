@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .errors import DefinitionError, UnknownCoord
+from .periods import Period, PeriodRange
 
 ROOT = "/"
 
@@ -116,12 +117,13 @@ def _validate_path(path: str) -> None:
 class Dimension:
     """A named dimension with ordered coord labels and an optional hierarchy.
 
-    `coords` is a Hierarchy or a list of entries: "code", ("code", "description")
-    or ("code", "description", {attrs}).
+    `coords` is a Hierarchy, a time spine (tm.period_range: its labels know their dates), or a
+    list of entries: "code", ("code", "description") or ("code", "description", {attrs}).
     """
 
-    def __init__(self, name: str, coords: Iterable[Entry] | Hierarchy):
+    def __init__(self, name: str, coords: Iterable[Entry] | Hierarchy | PeriodRange):
         self.name = name
+        self.time: PeriodRange | None = coords if isinstance(coords, PeriodRange) else None
         if isinstance(coords, Hierarchy):
             self.hierarchy: Hierarchy | None = coords
             self.coords: tuple[str, ...] = coords.paths
@@ -153,6 +155,13 @@ class Dimension:
         self.require(label)
         return self.label_attrs.get(label, {})
 
+    def period(self, label: str) -> Period:
+        """A time dimension's label as a Period, with its dates: start_time, end_time, days."""
+        self.require(label)
+        if self.time is None:
+            raise DefinitionError(f"dimension {self.name!r} is not a time dimension; make it with tm.period_range(...)")
+        return self.time.period(label)
+
     def require(self, label: str) -> None:
         if label not in self.coords:
             raise UnknownCoord(
@@ -164,5 +173,5 @@ class Dimension:
         return label in self.coords
 
     def __repr__(self) -> str:
-        kind = "hierarchy" if self.hierarchy else "flat"
+        kind = "hierarchy" if self.hierarchy else f"time, {self.time.freq}" if self.time else "flat"
         return f"<Dimension {self.name} ({kind}): {', '.join(self.coords)}>"

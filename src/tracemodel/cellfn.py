@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from . import dates
 from .errors import DefinitionError
 from .expr import Cell, Condition, Expr
+from .periods import Period
 
 if TYPE_CHECKING:
     from .model import Item, Model
@@ -102,6 +103,16 @@ class Bound:
         if dim not in self._at:
             raise DefinitionError(f"x has no {dim!r} label; this cell's dims are {', '.join(self._at)}")
         return dict(self._model.dimensions[dim].attrs(self._at[dim]))
+
+    @property
+    def period(self) -> Period:
+        """This cell's period, with its dates: x.period.start_time, x["start"] in x.period."""
+        return _the_period(self._model, self._at)
+
+    @property
+    def periods(self) -> dict[str, Period]:
+        """This cell's period on each of its time dims, e.g. x.periods["month"]."""
+        return _periods(self._model, self._at)
 
     def is_nil(self) -> bool:
         self._reads.append((self._cell, self._at))
@@ -293,8 +304,8 @@ def _function_source(fn: Callable[..., Any]) -> str | None:
 
 
 def _reads_labels(code: types.CodeType) -> bool:
-    """Does the function (or a comprehension in it) use x.coords or x.attrs(...)?"""
-    return bool({"coords", "attrs"} & set(code.co_names)) or any(
+    """Does the function (or a comprehension in it) use x.coords, x.attrs(...) or x.period?"""
+    return bool({"coords", "attrs", "period", "periods"} & set(code.co_names)) or any(
         _reads_labels(c) for c in code.co_consts if isinstance(c, types.CodeType))
 
 
@@ -371,6 +382,30 @@ class CheckX:
         if dim not in self._at:
             raise DefinitionError(f"x has no {dim!r} label; this run's dims are {', '.join(self._at)}")
         return dict(self._model.dimensions[dim].attrs(self._at[dim]))
+
+    @property
+    def period(self) -> Period:
+        """This run's period, with its dates."""
+        return _the_period(self._model, self._at)
+
+    @property
+    def periods(self) -> dict[str, Period]:
+        return _periods(self._model, self._at)
+
+
+def _periods(model: Model, at: Mapping[str, str]) -> dict[str, Period]:
+    return {d: model.dimensions[d].period(label) for d, label in at.items() if model.dimensions[d].time is not None}
+
+
+def _the_period(model: Model, at: Mapping[str, str]) -> Period:
+    found = _periods(model, at)
+    if len(found) == 1:
+        return next(iter(found.values()))
+    if not found:
+        raise DefinitionError(f"x.period: none of this cell's dims ({', '.join(at) or 'none'}) is a time "
+                              "dimension; make one with tm.period_range(...)")
+    raise DefinitionError(f"x.period: this cell has several time dims ({', '.join(found)}); "
+                          f"use x.periods[{next(iter(found))!r}]")
 
 
 def compile_check(fn: Callable[..., Any], model: Model) -> Condition | CellFunction:

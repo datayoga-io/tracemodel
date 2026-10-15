@@ -401,9 +401,13 @@ class _Writer:
             for label in d.coords:
                 keys += [k for k in d.attrs(label) if k not in keys]
         rows = [[d.name, label, d.description(label), d.hierarchy.parent(label) if d.hierarchy else None,
-                 _depth(d, label), *(d.attrs(label).get(k) for k in keys)] for d in dims for label in d.coords]
-        self._table(ws, "Dimensions", ["dimension", "label", "description", "parent", "depth", *keys], rows,
-                    {1: 22, 2: 44, 3: 50})
+                 _depth(d, label), *_dates(d, label), *(d.attrs(label).get(k) for k in keys)]
+                for d in dims for label in d.coords]
+        header = ["dimension", "label", "description", "parent", "depth", "start", "end", *keys]
+        self._table(ws, "Dimensions", header, rows, {1: 22, 2: 44, 3: 50, 6: 12, 7: 12})
+        for row in ws.iter_rows(min_row=2, min_col=6, max_col=7):
+            for c in row:
+                c.number_format = "yyyy-mm-dd"
 
     def items(self, ws, sheet_of) -> None:
         items = list(self.model.items.values())
@@ -541,6 +545,14 @@ def _number_format(model: Model, item: Item) -> str:
         if isinstance(v, float) and abs(v - round(v)) > 1e-9:
             return "#,##0.00###;(#,##0.00###)"
     return whole
+
+
+def _dates(dim, label) -> tuple[date | None, date | None]:
+    """A time dimension's label: its first and last day."""
+    if dim.time is None:
+        return None, None
+    p = dim.period(label)
+    return p.start_time, p.end_time
 
 
 def _title(item: Item) -> str:
