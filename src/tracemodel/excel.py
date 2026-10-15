@@ -426,11 +426,7 @@ class _Writer:
     def checks(self, ws) -> None:
         rows = []
         for c in self.model.checks.values():
-            if c.params:
-                first = next(iter(c.conditions.values()))
-                expect = f"per {', '.join(c.params)}; e.g. {first!r}"
-            else:
-                expect = repr(c.expect)
+            expect = repr(c.expect)
             rows.append([c.id, c.severity, c.description, ", ".join(c.coords) or "-", expect])
         self._table(ws, "Checks", ["check", "severity", "description", "runs over", "expect"], rows,
                     {1: 22, 3: 60, 4: 24, 5: 90})
@@ -517,17 +513,16 @@ def _state(model: Model, item: Item, full: Mapping[str, str]) -> tuple[Any, str 
 def _flagged(model: Model, report: Report) -> set:
     """Cells to mark: what a failing run reads directly (not its formulas' inputs), and any
     cell it found missing."""
-    from .cellfn import CellFunction, CheckX
+    from .cellfn import run_check
+    from .formula import Formula
 
     out = set()
     for r in report.failures:
         out |= {(c.item, tuple(c.coords.values())) for c in r.missing}
-        if isinstance(r.check.expect, CellFunction):
-            reads: list = []
+        reads: list = []
+        if isinstance(r.check.expect, Formula):
             with contextlib.suppress(Exception):  # only the reads matter
-                r.check.expect(CheckX(model, r.at, reads))
-        else:
-            reads = [(c, r.at) for c in r.expect.cells()]
+                run_check(r.check.expect, model, r.at, reads)
         for c, at in reads:
             with contextlib.suppress(Exception):  # a read that doesn't resolve marks nothing
                 full = c.resolve(at)

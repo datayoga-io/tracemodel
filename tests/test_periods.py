@@ -158,13 +158,11 @@ def test_x_period_needs_one_time_dim():
     m.add_dimension("month", tm.period_range("2026-01", periods=2))
     m.add_dimension("year", tm.period_range("2026", periods=1, freq="Y"))
     m.add_dimension("line", ["a"])
-    m.add_item("by_line", ("line",), formula=lambda x: x.period.days)
-    m.add_item("both", ("month", "year"), formula=lambda x: x.period.days)
-    m.add_item("days", ("month", "year"), formula=lambda x: x.periods["month"].days)
-    with pytest.raises(tm.DefinitionError, match="none of this cell's dims"):
-        m.get("by_line", line="a")
+    with pytest.raises(tm.DefinitionError, match="none of this cell's dims"):   # caught when added
+        m.add_item("by_line", ("line",), formula=lambda x: x.period.days)
     with pytest.raises(tm.DefinitionError, match=r"x.periods\['month'\]"):
-        m.get("both", month="2026-01", year="2026")
+        m.add_item("both", ("month", "year"), formula=lambda x: x.period.days)
+    m.add_item("days", ("month", "year"), formula=lambda x: x.periods["month"].days)
     assert m.get("days", month="2026-02", year="2026") == 28
 
 
@@ -181,7 +179,7 @@ def test_save_and_load(m, tmp_path):
     saved = {d["name"]: d for d in json.loads((tmp_path / "model.json").read_text())["dimensions"]}
     assert saved["month"]["time"] == {"freq": "M", "first": "2026-01"}
     assert saved["fy"]["time"] == {"freq": "Y-SEP", "first": "2024", "label": "FY{year}"}
-    again = tm.load(tmp_path / "model.json", allow_code=True)
+    again = tm.load(tmp_path / "model.json")
     again.load_jsonl(tmp_path / "values.jsonl")
     assert again.dimensions["fy"].period("FY2025").start_time == date(2024, 10, 1)
     assert column(again, "retainer") == column(m, "retainer")
@@ -189,7 +187,7 @@ def test_save_and_load(m, tmp_path):
     data = json.loads((tmp_path / "model.json").read_text())
     data["dimensions"][0]["coords"][2] = "2026-04"
     with pytest.raises(tm.DefinitionError, match="don't match its time spine"):
-        tm.Model.from_dict(data, allow_code=True)
+        tm.Model.from_dict(data)
 
 
 def test_excel_shows_each_periods_dates(m, tmp_path):

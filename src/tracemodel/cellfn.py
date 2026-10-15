@@ -1,9 +1,9 @@
-"""Formulas written as Python functions of the cell: formula=lambda x: max(0, 25_000 - x["cash"]).
+"""`x`, the cell a formula or check runs with: lambda x: max(0, 25_000 - x["cash"]).
 
-A function formula is first called once with symbolic cells (`Here`). If it only uses the
-expression grammar it returns an expression, and the formula is stored as that expression.
-Otherwise it is kept as a `CellFunction` and called for each cell with `x`, a `Bound`: numbers
-on demand, so plain Python (max, min, if/else, math) works.
+`x` behaves as the cell's value (a number, or a date for a date item), read on demand and
+traced; x["item"], .sel(), .lag() and .lead() read other cells, and x.coords, x.attrs(),
+x.period, x.children() and x.labels() give the cell's labels and what the model knows about
+them. In a check, `x` is the run: it has the run's labels but no value of its own.
 """
 
 from __future__ import annotations
@@ -17,57 +17,75 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from . import dates
-from .errors import DefinitionError
-from .expr import Cell, Condition, Expr
+from .errors import DefinitionError, UnknownItem
+from .expr import Cell
+from .formula import CellValue, Formula, allow_attrs
 from .periods import Period
 
 if TYPE_CHECKING:
     from .model import Item, Model
 
 
-def _item_or_label(cell: Cell, key: str) -> Cell:
-    """x["cash"]: the item `cash` at the same coords; otherwise a label of x's own item."""
-    model = cell.model
+class Missing(Exception):
+    """A cell a formula reads has no value: the formula's cell is missing too."""
+
+
+def _item_or_label(model: Model, cell: Cell | None, key: Any, root: bool = True) -> Cell:
+    """x["cash"]: the item `cash` at the same coords; otherwise a label of x's own item. On a
+    cell reached from x (x["results"]["net_sales"]) a key is always a label."""
+    if not isinstance(key, str):
+        raise DefinitionError(f"x[{key!r}]: x takes an item name or a label, e.g. x['revenue']")
+    if not root and cell is not None:
+        return cell[key]
     if key in model.items:
         return model[key]
+    if cell is None:
+        raise UnknownItem(f"x[{key!r}]: no item {key!r}; in a check, x reads items, e.g. x[\"revenue\"]")
+    if not any(key in model.dimensions[d] for d in cell.free_dims()):
+        raise UnknownItem(f"x[{key!r}]: {key!r} is neither an item nor a label of {cell!r}'s dims "
+                          f"({', '.join(cell.free_dims()) or 'none'})")
     return cell[key]
 
 
-class Here(Cell):
-    """The symbolic `x` a function formula is first called with."""
-
-    def __getitem__(self, key: str) -> Cell:  # type: ignore[override]
-        return _item_or_label(self, key)
-
-
-class Bound:
+class Bound(CellValue):
     """`x` for one cell: behaves as that cell's value (a number, or a date for a date item);
-    x["item"], .lag() etc. read others."""
+    x["item"], .lag() etc. read others. With no cell, a check run's `x`."""
 
-    __slots__ = ("_at", "_cell", "_model", "_reads")
+    __slots__ = ("_at", "_cell", "_model", "_reads", "_root")
 
-    def __init__(self, model: Model, cell: Cell, at: Mapping[str, str], reads: list):
-        self._model, self._cell, self._at, self._reads = model, cell, dict(at), reads
+    def __init__(self, model: Model, cell: Cell | None, at: Mapping[str, str], reads: list, root: bool = True):
+        # `at` is shared by every x reached from this one; nothing changes it
+        self._model, self._cell, self._at, self._reads, self._root = model, cell, at, reads, root
 
     def _wrap(self, cell: Cell) -> Bound:
-        return Bound(self._model, cell, self._at, self._reads)
+        return Bound(self._model, cell, self._at, self._reads, False)
 
     def _get(self) -> Any:
         """The cell's value, read (and traced) now."""
-        open_dims = [d for d in self._cell.free_dims() if d not in self._at]
-        if open_dims:
+        if self._cell is None:
+            raise DefinitionError("in a check, x is the run, not a cell: read an item, e.g. x['revenue']")
+        cell, at = self._cell, self._at
+        if len(cell.coords) + len(at) < len(cell.item.dims) or any(
+                d not in at and d not in cell.coords for d in cell.item.dims):
+            open_dims = [d for d in cell.free_dims() if d not in at]
             raise DefinitionError(
                 f"x: {self._cell!r} leaves {', '.join(open_dims)} open, which this cell doesn't have; "
                 f"pick a label, e.g. x[{self._cell.item.name!r}].sel({open_dims[0]}=...)"
             )
-        self._reads.append((self._cell, self._at))
-        return self._model._lookup(self._cell, self._at)
+        self._reads.append((cell, at))
+        return self._model._lookup(cell, at)
 
     def __float__(self) -> float:
         value = self._get()
         if dates.kind(value) != "number":
             raise TypeError(f"{self._cell!r} is a {dates.kind(value)}, not a number")
         return float(value)
+
+    def __int__(self) -> int:
+        value = self._get()
+        if dates.kind(value) != "number":
+            raise TypeError(f"{self._cell!r} is a {dates.kind(value)}, not a number")
+        return int(value)
 
     @property
     def dt(self) -> dates.DatetimeAccessor:
@@ -79,30 +97,67 @@ class Bound:
 
     # reading other cells
     def __getitem__(self, key: str) -> Bound:
-        return self._wrap(_item_or_label(self._cell, key))
+        model = self._model
+        if self._root and type(key) is str and key in model.items:  # x["revenue"], the common case
+            return Bound(model, model[key], self._at, self._reads, False)
+        return self._wrap(_item_or_label(model, self._cell, key, self._root))
+
+    def _own(self, method: str) -> Cell:
+        if self._cell is None:
+            raise DefinitionError(f"in a check, x is the run, not a cell: use x['item'].{method}(...)")
+        return self._cell
 
     def sel(self, **coords: str) -> Bound:
-        return self._wrap(self._cell.sel(**coords))
+        return self._wrap(self._own("sel").sel(**coords))
 
     def shift(self, **steps: int) -> Bound:
-        return self._wrap(self._cell.shift(**steps))
+        return self._wrap(self._own("shift").shift(**steps))
 
     def lag(self, dim: str, n: int = 1) -> Bound:
-        return self._wrap(self._cell.lag(dim, n))
+        return self._wrap(self._own("lag").lag(dim, n))
 
     def lead(self, dim: str, n: int = 1) -> Bound:
-        return self._wrap(self._cell.lead(dim, n))
+        return self._wrap(self._own("lead").lead(dim, n))
 
     @property
     def coords(self) -> dict[str, str]:
         """This cell's labels, e.g. {"period": "FY2027"}."""
         return dict(self._at)
 
+    def _label(self, dim: str) -> str:
+        if dim not in self._at:
+            raise DefinitionError(f"x has no {dim!r} label; this cell's dims are {', '.join(self._at) or 'none'}")
+        return self._at[dim]
+
     def attrs(self, dim: str) -> dict:
         """The attrs of this cell's label along `dim`, e.g. x.attrs("period") -> {"kind": "forecast"}."""
-        if dim not in self._at:
-            raise DefinitionError(f"x has no {dim!r} label; this cell's dims are {', '.join(self._at)}")
-        return dict(self._model.dimensions[dim].attrs(self._at[dim]))
+        label = self._label(dim)
+        return dict(self._model.dimensions[dim].attrs(label))
+
+    def _hierarchy(self, dim: str, method: str):
+        label = self._label(dim)
+        hierarchy = self._model.dimensions[dim].hierarchy
+        if hierarchy is None:
+            raise DefinitionError(f"x.{method}({dim!r}): {dim!r} is not a hierarchy; "
+                                  f"x.labels({dim!r}) gives all its labels")
+        return hierarchy, label
+
+    def children(self, dim: str) -> list[str]:
+        """The labels under this cell's label in a hierarchy, e.g. ["/products/iphone", ...]; [] on a leaf.
+        A rollup check: abs(x["sales"] - sum(x["sales"].sel(segment=c) for c in x.children("segment"))) <= 0.5"""
+        hierarchy, label = self._hierarchy(dim, "children")
+        return hierarchy.children(label)
+
+    def parent(self, dim: str) -> str | None:
+        """The label above this cell's label in a hierarchy; None at the top."""
+        hierarchy, label = self._hierarchy(dim, "parent")
+        return hierarchy.parent(label)
+
+    def labels(self, dim: str) -> list[str]:
+        """All the labels of a dimension, in order."""
+        if dim not in self._model.dimensions:
+            raise DefinitionError(f"x.labels({dim!r}): no dimension {dim!r}")
+        return list(self._model.dimensions[dim].coords)
 
     @property
     def period(self) -> Period:
@@ -115,8 +170,16 @@ class Bound:
         return _periods(self._model, self._at)
 
     def is_nil(self) -> bool:
-        self._reads.append((self._cell, self._at))
-        return self._model._is_nil(self._cell, self._at)
+        """The cell was entered as tm.NIL ("—"), not as a number such as 0; a cell with no value
+        is missing, not nil."""
+        cell = self._own("is_nil")
+        self._reads.append((cell, self._at))
+        value = self._model._value(cell, self._at)
+        if value is None:
+            raise Missing
+        from .values import NIL
+
+        return value is NIL
 
     # behaving as its value: a number, or a date (date - date is a timedelta, as in pandas)
     def __add__(self, o): return self._get() + _num(o)
@@ -144,7 +207,7 @@ class Bound:
     __hash__ = None  # type: ignore[assignment]
 
     def __repr__(self) -> str:
-        return f"<{self._cell!r} at {self._at}>"
+        return f"<{self._cell!r} at {self._at}>" if self._cell is not None else f"<x at {self._at}>"
 
 
 def _num(x: Any) -> Any:
@@ -159,118 +222,8 @@ def _other(value: Any, o: Any) -> Any:
     return o
 
 
-class CellFunction:
-    """A formula kept as a Python function, called once per cell with `x` (a Bound)."""
-
-    def __init__(self, fn: Callable[..., Any], source: str | None = None, env: Mapping[str, Any] | None = None):
-        self.fn = fn
-        self._source, self._env = source, dict(env) if env is not None else None
-
-    @property
-    def source(self) -> str | None:
-        if self._source is None:
-            self._source = _function_source(self.fn)
-        return self._source
-
-    def __call__(self, x: Bound) -> Any:
-        return self.fn(x)
-
-    def __repr__(self) -> str:
-        return self.source or f"<function {self.fn.__name__}>"
-
-    # == saving ==
-    def to_data(self, model: Model) -> dict[str, Any]:
-        """{"python": source, "env": {name: value}}: the source plus the names it uses."""
-        if self.source is None:
-            raise DefinitionError(
-                f"can't save formula {self.fn!r}: its source isn't available "
-                "(was it typed at a plain python prompt or built with exec?)"
-            )
-        if self._env is not None:
-            env = self._env
-        else:
-            env = {}
-            cv = inspect.getclosurevars(self.fn)
-            for name, value in {**cv.globals, **cv.nonlocals}.items():
-                env[name] = _env_value(name, value, model, self.source)
-            env |= _default_names(self.fn, self.source, model)
-        return {"python": self.source, "env": env}
-
-    @classmethod
-    def from_data(cls, data: Mapping[str, Any], model: Model) -> CellFunction:
-        namespace: dict[str, Any] = {}
-        for name, value in data.get("env", {}).items():
-            namespace[name] = _env_restore(value, model)
-        exec(compile(f"__formula__ = ({data['python']})", "<tracemodel formula>", "exec"), namespace)  # noqa: S102
-        return cls(namespace["__formula__"], data["python"], data.get("env", {}))
-
-
-def _default_names(fn: Callable[..., Any], source: str, model: Model) -> dict[str, Any]:
-    """lambda x, k=k: ...: the default is evaluated where the lambda is written, so save k's value."""
-    args = ast.parse(source, mode="eval").body.args  # type: ignore[attr-defined]
-    kwdefaults = getattr(fn, "__kwdefaults__", None) or {}
-    pairs = [*zip(args.defaults, getattr(fn, "__defaults__", None) or ()),
-             *((d, kwdefaults[a.arg]) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None)]
-    env = {}
-    for node, value in pairs:
-        if isinstance(node, ast.Constant):
-            continue
-        if not isinstance(node, ast.Name):
-            raise DefinitionError(
-                f"can't save formula {source!r}: a default value must be a constant or a name (k=k), "
-                f"not {ast.unparse(node)!r}"
-            )
-        env[node.id] = _env_value(node.id, value, model, source)
-    return env
-
-
-def _env_value(name: str, value: Any, model: Model, source: str) -> Any:
-    if value is model:
-        return {"$model": True}
-    if isinstance(value, types.ModuleType):
-        return {"$module": value.__name__}
-    if isinstance(value, Expr):
-        from .model import _text
-
-        return {"$expr": _text(value)}
-    if (saved := dates.env_value(value)) is not None:
-        return saved
-    if _is_json(value):
-        return value
-    raise DefinitionError(
-        f"can't save formula {source!r}: it uses {name!r} = {value!r}; a saved formula may use "
-        "numbers, strings, lists and dicts of them, dates, expressions, modules and the model"
-    )
-
-
-def _env_restore(value: Any, model: Model) -> Any:
-    if isinstance(value, dict) and len(value) == 1:
-        (key, v), = value.items()
-        if key == "$model":
-            return model
-        if key == "$module":
-            return __import__(v)
-        if key == "$expr":
-            from .text import parse
-
-            return parse(v, model)
-        if key in dates.ENV_KEYS:
-            return dates.env_restore(key, v)
-    return value
-
-
-def _is_json(value: Any) -> bool:
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return True
-    if isinstance(value, (list, tuple)):
-        return all(_is_json(v) for v in value)
-    if isinstance(value, dict):
-        return all(isinstance(k, str) and _is_json(v) for k, v in value.items())
-    return False
-
-
 def _function_source(fn: Callable[..., Any]) -> str | None:
-    """The text of a lambda (the lambda expression alone) or a def; None when unavailable."""
+    """The text of a lambda (the lambda expression alone); None when unavailable or not a lambda."""
     code = getattr(fn, "__code__", None)
     if code is None:
         return None
@@ -287,7 +240,7 @@ def _function_source(fn: Callable[..., Any]) -> str | None:
     except SyntaxError:
         return None
     if fn.__name__ != "<lambda>":
-        return None  # a def: kept as code, but not savable as one expression
+        return None  # a def: a formula is one lambda
     found = [n for n in ast.walk(tree) if isinstance(n, ast.Lambda) and n.lineno == code.co_firstlineno]
     if len(found) > 1:  # several lambdas on one line: the one whose code matches
         def same(node: ast.Lambda) -> bool:
@@ -301,96 +254,6 @@ def _function_source(fn: Callable[..., Any]) -> str | None:
     if len(found) != 1:
         return None
     return ast.get_source_segment(text, found[0])
-
-
-def _reads_labels(code: types.CodeType) -> bool:
-    """Does the function (or a comprehension in it) use x.coords, x.attrs(...) or x.period?"""
-    return bool({"coords", "attrs", "period", "periods"} & set(code.co_names)) or any(
-        _reads_labels(c) for c in code.co_consts if isinstance(c, types.CodeType))
-
-
-def compile_formula(fn: Callable[..., Any], model: Model, item: Item) -> Expr | CellFunction:
-    """An expression when `fn` only uses the expression grammar, else a CellFunction."""
-    code = getattr(fn, "__code__", None)
-    if code is not None and _reads_labels(code):  # the symbolic x has no labels to branch on
-        return CellFunction(fn)
-    try:
-        result = fn(Here(model, item))
-    except Exception:  # noqa: BLE001 - max(), if/else, math, ...: not an expression; run it per cell
-        return CellFunction(fn)
-    return result if isinstance(result, Expr) else CellFunction(fn)  # an Expr, or x itself (a Here)
-
-
-def run(fn: CellFunction, model: Model, item: Item, full: Mapping[str, str], reads: list) -> Any:
-    """Call a function formula for one cell; numbers, expressions or None (missing) come back."""
-    result = fn(Bound(model, Cell(model, item), full, reads))
-    if isinstance(result, Bound):
-        return result._get()
-    if isinstance(result, Expr):
-        return result.evaluate(lambda c, a: _track(model, reads, c, a), full)
-    if result is None or isinstance(result, (int, float, date, timedelta)) and not isinstance(result, bool):
-        return result  # the model checks it against the item's dtype
-    from .values import NIL
-
-    if result is NIL:
-        return result
-    raise DefinitionError(f"formula {fn!r} returned {result!r} for {item.name} {dict(full)}; "
-                          "it must return a number, or a date for a date item")
-
-
-def _track(model: Model, reads: list, cell: Cell, at: Mapping[str, str]) -> float:
-    reads.append((cell, dict(at)))
-    return model._lookup(cell, at)
-
-
-# == value checks: expect=lambda x: 0 <= x["margin"] <= 1 =====================
-
-def _check_item(model: Model, key: str) -> Cell:
-    if key not in model.items:
-        raise DefinitionError(f"x[{key!r}]: no item {key!r}; in a check, x reads items, e.g. x[\"revenue\"]")
-    return model[key]
-
-
-class _CheckHere:
-    """The symbolic `x` a value check is first called with."""
-
-    def __init__(self, model: Model):
-        self._model = model
-
-    def __getitem__(self, key: str) -> Cell:
-        return _check_item(self._model, key)
-
-
-class CheckX:
-    """`x` in a value check: x["item"] reads an item at the run's coords, as a number."""
-
-    __slots__ = ("_at", "_model", "_reads")
-
-    def __init__(self, model: Model, at: Mapping[str, str], reads: list):
-        self._model, self._at, self._reads = model, dict(at), reads
-
-    def __getitem__(self, key: str) -> Bound:
-        return Bound(self._model, _check_item(self._model, key), self._at, self._reads)
-
-    @property
-    def coords(self) -> dict[str, str]:
-        """This run's labels, e.g. {"period": "FY2027"}."""
-        return dict(self._at)
-
-    def attrs(self, dim: str) -> dict:
-        """The attrs of this run's label along `dim`."""
-        if dim not in self._at:
-            raise DefinitionError(f"x has no {dim!r} label; this run's dims are {', '.join(self._at)}")
-        return dict(self._model.dimensions[dim].attrs(self._at[dim]))
-
-    @property
-    def period(self) -> Period:
-        """This run's period, with its dates."""
-        return _the_period(self._model, self._at)
-
-    @property
-    def periods(self) -> dict[str, Period]:
-        return _periods(self._model, self._at)
 
 
 def _periods(model: Model, at: Mapping[str, str]) -> dict[str, Period]:
@@ -408,13 +271,29 @@ def _the_period(model: Model, at: Mapping[str, str]) -> Period:
                           f"use x.periods[{next(iter(found))!r}]")
 
 
-def compile_check(fn: Callable[..., Any], model: Model) -> Condition | CellFunction:
-    """A condition when `fn` only uses the expression grammar, else a CellFunction run per check run."""
-    try:
-        result = fn(_CheckHere(model))
-    except Exception:  # noqa: BLE001 - and, or, chained comparisons, max, if/else, x.coords: run with numbers
-        return CellFunction(fn)
-    return result if isinstance(result, Condition) else CellFunction(fn)
+_BOUND_ATTRS = {"attrs", "children", "coords", "dt", "is_nil", "labels", "lag", "lead", "parent", "period",
+                "periods", "sel", "shift"}
+allow_attrs(Bound, _BOUND_ATTRS)
 
 
-__all__ = ["Bound", "CellFunction", "CheckX", "Here", "compile_check", "compile_formula", "run"]
+def run(formula: Formula, model: Model, item: Item, full: Mapping[str, str], reads: list) -> Any:
+    """A formula's value for one cell: a number, a date, tm.NIL or None (missing)."""
+    result = formula.call(Bound(model, model[item.name], full, reads))
+    if isinstance(result, Bound):
+        return result._get()
+    if result is None or isinstance(result, (int, float, date, timedelta)) and not isinstance(result, bool):
+        return result  # the model checks it against the item's dtype
+    from .values import NIL
+
+    if result is NIL:
+        return result
+    raise DefinitionError(f"formula {formula!r} returned {result!r} for {item.name} {dict(full)}; "
+                          "it must return a number, or a date for a date item")
+
+
+def run_check(formula: Formula, model: Model, at: Mapping[str, str], reads: list) -> Any:
+    """A check's result for one run: True, False, or something else (an error)."""
+    return formula.call(Bound(model, None, dict(at), reads))
+
+
+__all__ = ["Bound", "Missing", "run", "run_check"]

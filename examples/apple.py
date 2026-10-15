@@ -51,9 +51,9 @@ def build_model() -> tm.Model:
     # 3. Data quality
     model.add_check("DQ-1",
         coords={"period": tm.ANY},
-        expect=abs(
-            model["net_sales"]["/"]
-            - (model["net_sales"]["/products"] + model["net_sales"]["/services"])
+        expect=lambda x: abs(
+            x["net_sales"]["/"]
+            - (x["net_sales"]["/products"] + x["net_sales"]["/services"])
         ) <= 0.2,
     )
     return model

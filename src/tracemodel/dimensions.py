@@ -142,6 +142,7 @@ class Dimension:
         for c in self.coords:
             if not isinstance(c, str):
                 raise DefinitionError(f"dimension {name!r}: coord {c!r} must be a string")
+        self.index: dict[str, int] = {c: i for i, c in enumerate(self.coords)}  # label -> position
 
     def description(self, label: str) -> str:
         """The label's description; a hierarchy falls back to the last path segment."""
@@ -163,14 +164,14 @@ class Dimension:
         return self.time.period(label)
 
     def require(self, label: str) -> None:
-        if label not in self.coords:
+        if label not in self.index:
             raise UnknownCoord(
                 f"{label!r} is not a coord of {self.name!r}; "
                 f"declared: {', '.join(self.coords)}"
             )
 
     def __contains__(self, label: object) -> bool:
-        return label in self.coords
+        return label in self.index
 
     def __repr__(self) -> str:
         kind = "hierarchy" if self.hierarchy else f"time, {self.time.freq}" if self.time else "flat"

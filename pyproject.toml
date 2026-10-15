@@ -1,6 +1,6 @@
 [project]
 name = "pytracemodel"
-version = "0.1.0"
+version = "0.2.0"
 description = "Traced, checked financial models in Python: every number has an address, a source and rules that check it."
 readme = "README.md"
 license = "Apache-2.0"
@@ -9,7 +9,9 @@ authors = [
     { name = "DataYoga", email = "oren@datayoga.io" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "restrictedpython>=8,<9",
+]
 keywords = ["financial modeling", "data quality", "xbrl", "ai agents", "three-statement model"]
 classifiers = [
     "Development Status :: 3 - Alpha",
