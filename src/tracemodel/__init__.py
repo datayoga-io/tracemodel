@@ -24,6 +24,7 @@ from .errors import (
     UnknownItem,
 )
 from .model import ANY, Check, Item, Model, filter_by_attrs
+from .periods import Period, PeriodRange, period_range
 from .table import Table
 from .values import NIL, Entry, Report
 
@@ -49,6 +50,8 @@ __all__ = [
     "Item",
     "MissingValue",
     "Model",
+    "Period",
+    "PeriodRange",
     "Report",
     "Table",
     "TraceModelError",
@@ -56,4 +59,5 @@ __all__ = [
     "UnknownItem",
     "filter_by_attrs",
     "load",
+    "period_range",
 ]

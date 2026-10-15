@@ -28,6 +28,7 @@ from .errors import (
     UnknownItem,
 )
 from .expr import Cell, Comparison, Condition, Expr, OutOfRange, diff
+from .periods import PeriodRange
 from .table import Table
 from .values import (
     NIL,
@@ -222,8 +223,9 @@ class Model:
         self.dimensions[name] = dim
         return dim
 
-    def add_coords(self, name: str, entries: Iterable[Any]) -> Dimension:
-        """Append labels to a dimension, e.g. forecast periods.
+    def add_coords(self, name: str, entries: Iterable[Any] | PeriodRange) -> Dimension:
+        """Append labels to a dimension, e.g. forecast periods. A time dimension takes the
+        periods that continue it: add_coords("month", tm.period_range("2027-01", periods=12)).
 
         Items get the new cells (not entered). Checks over the dimension with tm.ANY are
         re-expanded to cover the new labels; one that can't be (a function check loaded from a
@@ -233,6 +235,14 @@ class Model:
         if name not in self.dimensions:
             raise UnknownCoord(f"no dimension {name!r}; declared: {', '.join(self.dimensions)}")
         old = self.dimensions[name]
+        if old.time is not None:
+            if not isinstance(entries, PeriodRange):
+                raise DefinitionError(f"{name!r} is a time dimension: add periods with tm.period_range(...), "
+                                      f"e.g. tm.period_range({old.time.periods[-1].shift(1).label!r}, periods=12, "
+                                      f"freq={old.time.freq!r})")
+            entries = old.time.extended(entries)
+            if len(entries) == len(old.coords):
+                return old
         current = [_entry_tuple(old, c) for c in old.coords]
         new = [_parse_entry(e) for e in entries]
         repeated = [e for e in new if e[0] in old.coords]
@@ -243,7 +253,8 @@ class Model:
         if not added:
             return old
         all_entries = current + added
-        dim = Dimension(name, Hierarchy(all_entries) if old.hierarchy else all_entries)
+        dim = Dimension(name, entries if old.time is not None else Hierarchy(all_entries) if old.hierarchy
+                        else all_entries)
         checks = dict(self.checks)
         self.dimensions[name] = dim
         self._changed()
@@ -720,7 +731,13 @@ class Model:
         model = cls()
         for d in data["dimensions"]:
             entries = [e if isinstance(e, str) else tuple(e) for e in d["coords"]]
-            model.add_dimension(d["name"], Hierarchy(entries) if d.get("hierarchy") else entries)
+            if "time" in d:
+                spine = PeriodRange.from_data(d["time"], len(entries))
+                if list(spine.labels) != entries:
+                    raise DefinitionError(f"dimension {d['name']!r}: its coords don't match its time spine {d['time']}")
+                model.add_dimension(d["name"], spine)
+            else:
+                model.add_dimension(d["name"], Hierarchy(entries) if d.get("hierarchy") else entries)
         for i in data["items"]:
             text = i.get("formula")
             if isinstance(text, dict):
@@ -1026,7 +1043,8 @@ class Model:
 
 
 def _definition(dim: Dimension) -> tuple:
-    return dim.coords, dim.hierarchy is not None, dim.descriptions, dim.label_attrs
+    time = dim.time.to_data() if dim.time is not None else None
+    return dim.coords, dim.hierarchy is not None, dim.descriptions, dim.label_attrs, time
 
 
 FORMAT = "tracemodel/1"
@@ -1174,6 +1192,8 @@ def _dimension_data(dim: Dimension) -> dict[str, Any]:
     data: dict[str, Any] = {"name": dim.name}
     if dim.hierarchy is not None:
         data["hierarchy"] = True
+    if dim.time is not None:
+        data["time"] = dim.time.to_data()
     data["coords"] = [_entry_data(dim, c) for c in dim.coords]
     return data
 
