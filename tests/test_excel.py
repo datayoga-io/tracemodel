@@ -20,13 +20,14 @@ def build():
     m.add_dimension("segment", tm.Hierarchy([("/", "Total"), ("/a", "Segment A"), ("/b", "Segment B")]))
     usd = {"units": "USD", "scale": "millions"}
     m.add_item("revenue", ("segment", "period"), attrs=usd, description="Net revenue")
-    m.add_item("cost", ("segment", "period"), attrs=usd, formula=m["revenue"] * 0.6, description="Cost of revenue")
-    m.add_item("margin", ("period",), attrs=usd, formula=m["revenue"]["/"] - m["cost"]["/"])
+    m.add_item("cost", ("segment", "period"), attrs=usd, formula=lambda x: x["revenue"] * 0.6,
+               description="Cost of revenue")
+    m.add_item("margin", ("period",), attrs=usd, formula=lambda x: x["revenue"]["/"] - x["cost"]["/"])
     m.add_item("launch", ("period",), dtype="date")
     m.add_item("headcount", ("segment",), dtype=int)
     m.add_item("offices", ("segment",), dtype=int)
     m.add_check("REV-TOTAL", coords={"period": tm.ANY},
-                expect=m["revenue"]["/"] == m["revenue"]["/a"] + m["revenue"]["/b"],
+                expect=lambda x: x["revenue"]["/"] == x["revenue"]["/a"] + x["revenue"]["/b"],
                 description="Total revenue is the sum of the segments")
     with m.transaction():
         for period, total, a, b in [("FY2024", 70, 70, tm.NIL), ("FY2025", 120, 80, 30)]:
@@ -88,7 +89,7 @@ def test_cells_show_how_they_were_made(m, tmp_path):
     assert total[3].fill.fgColor.rgb == FAILING and b[3].fill.fgColor.rgb == FAILING  # FY2025 fails: 120 != 110
     assert total[2].fill.fgColor.rgb != FAILING  # FY2024 passes
     assert cost[0][2].value == 42 and cost[0][2].font.color.rgb == BLACK
-    assert cost[0][2].comment.text == "= revenue * 0.6"
+    assert cost[0][2].comment.text == "= x['revenue'] * 0.6"
     assert cost[1][3].value == 50 and cost[1][3].fill.fgColor.rgb == OVERRIDE
     assert "Overrides the formula" in cost[1][3].comment.text
     launch = rows(ws)["Launch"]

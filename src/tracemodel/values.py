@@ -10,7 +10,7 @@ from .errors import UnknownCoord
 from .table import Table, _fmt
 
 if TYPE_CHECKING:
-    from .expr import Condition, Expr
+    from .formula import Formula
     from .model import Check, Model
 
 SOURCE_REQUIRED = ("document", "url", "section")
@@ -41,9 +41,9 @@ NIL = _Nil()
 class Entry:
     item: str
     coords: dict[str, str]
-    value: float | _Nil | Expr  # an Expr is a formula for this one cell
+    value: float | _Nil | Formula  # a Formula calculates this one cell
     source: dict[str, Any]
-    history: list[tuple[float | _Nil | Expr, dict[str, Any]]] = field(default_factory=list)  # replaced (value, source)
+    history: list[tuple[float | _Nil | Formula, dict[str, Any]]] = field(default_factory=list)  # replaced (value, source)
     overrides_formula: bool = False  # entered over the item's formula
 
     def to_json(self) -> dict[str, Any]:
@@ -64,6 +64,47 @@ class CellRead:
 
 
 @dataclass
+class Trace:
+    """A cell or a check run in a precedents or dependents trace, as Excel's Trace Precedents
+    and Trace Dependents draw them. `children` is filled with deep=True; a cell already shown
+    higher up the trace is listed again with `repeated` set and no children."""
+
+    name: str  # the item, or the check id
+    coords: dict[str, str]
+    kind: str = "cell"  # "cell" or "check"
+    children: list[Trace] = field(default_factory=list)
+    repeated: bool = False
+
+    def flatten(self) -> list[Trace]:
+        """Every cell and check below this one, each once, nearest first."""
+        out, seen, level = [], {self.key}, list(self.children)
+        while level:
+            nxt = []
+            for t in level:
+                if t.key not in seen:
+                    seen.add(t.key)
+                    out.append(t)
+                    nxt += t.children
+            level = nxt
+        return out
+
+    @property
+    def key(self) -> tuple:
+        return self.kind, self.name, tuple(self.coords.items())
+
+    def __str__(self) -> str:
+        where = ", ".join(f"{d}={v}" for d, v in self.coords.items())
+        head = f"check {self.name}[{where}]" if self.kind == "check" else f"{self.name}[{where}]"
+        lines = [head + (" (see above)" if self.repeated else "")]
+        for c in self.children:
+            lines += ["  " + line for line in str(c).splitlines()]
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return str(self).splitlines()[0]
+
+
+@dataclass
 class CheckResult:
     check: Check
     at: dict[str, str]
@@ -71,8 +112,8 @@ class CheckResult:
     rhs: float | None
     passed: bool
     cells: list[CellRead]
-    expect: Condition  # the condition this run tested (a value check: its function)
-    error: str | None = None  # a value check that raised or didn't return a bool
+    expect: Formula  # the check's lambda
+    error: str | None = None  # a check that raised or didn't return a bool
 
     @property
     def diff(self) -> float | None:

@@ -193,9 +193,9 @@ if [ "$TASK_NAME" = enter ]; then
   grep -nE '\.(add_[a-z_]+|remove_[a-z_]+|save|from_dict)\(' enter.py || echo "enter.py calls no definition methods"
   uv run python -c '
 import json, tracemodel as tm
-before = tm.load(".tracemodel-sandbox.model.json", allow_code=True)
-after = tm.load(".tracemodel-sandbox.model.json", allow_code=True)
-after.load_jsonl("values.jsonl", allow_code=True)
+before = tm.load(".tracemodel-sandbox.model.json")
+after = tm.load(".tracemodel-sandbox.model.json")
+after.load_jsonl("values.jsonl")
 same = json.dumps(before.to_dict(), sort_keys=True) == json.dumps(after.to_dict(), sort_keys=True)
 print("definition unchanged after loading values.jsonl:", same)
 r = after.check()

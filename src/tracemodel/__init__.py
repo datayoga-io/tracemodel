@@ -23,18 +23,26 @@ from .errors import (
     UnknownCoord,
     UnknownItem,
 )
+from .formula import Formula
 from .model import ANY, Check, Item, Model, filter_by_attrs
 from .periods import Period, PeriodRange, period_range
 from .table import Table
-from .values import NIL, Entry, Report
+from .values import NIL, Entry, Report, Trace
 
 
-def load(path: str | Path, allow_code: bool = False) -> Model:
+def load(path: str | Path, allow_code: bool | None = None, formulas: str = "on") -> Model:
     """A model from a definition file written by `model.save(path)`.
 
-    Formulas saved as Python functions are code; loading them needs allow_code=True.
+    Formulas are checked against the formula allow-list and compiled with RestrictedPython;
+    nothing else runs. formulas="off" keeps them as text without compiling them. `allow_code`
+    is ignored.
     """
-    return Model.from_dict(json.loads(Path(path).read_text()), allow_code=allow_code)
+    if allow_code is not None:
+        import warnings
+
+        warnings.warn("allow_code is ignored: formulas are checked and compiled safely, and never need it",
+                      DeprecationWarning, stacklevel=2)
+    return Model.from_dict(json.loads(Path(path).read_text()), formulas=formulas)
 
 
 __all__ = [
@@ -45,6 +53,7 @@ __all__ = [
     "DimMismatch",
     "Dimension",
     "Entry",
+    "Formula",
     "Hierarchy",
     "InvalidValue",
     "Item",
@@ -54,6 +63,7 @@ __all__ = [
     "PeriodRange",
     "Report",
     "Table",
+    "Trace",
     "TraceModelError",
     "UnknownCoord",
     "UnknownItem",

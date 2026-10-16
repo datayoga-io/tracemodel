@@ -83,12 +83,12 @@ def test_milestone_date_places_payments(m):
 
 
 def test_expressions_with_dates(m):
-    m.add_item("deadline", ("milestone",), dtype=date, formula=m["baseline_date"] + timedelta(days=14))
-    assert repr(m.items["deadline"].formula) == "baseline_date + timedelta(days=14)"
+    m.add_item("deadline", ("milestone",), dtype=date, formula=lambda x: x["baseline_date"] + timedelta(days=14))
+    assert repr(m.items["deadline"].formula) == "x['baseline_date'] + timedelta(days=14)"
     assert m.get("deadline", milestone="footings") == date(2026, 4, 3)
     m.add_check("ON-TIME", coords={"milestone": tm.ANY},
-                expect=m["forecast_date"] <= m["baseline_date"] + timedelta(days=30))
-    m.add_check("AFTER-START", coords={"milestone": tm.ANY}, expect=m["baseline_date"] >= date(2026, 1, 1))
+                expect=lambda x: x["forecast_date"] <= x["baseline_date"] + timedelta(days=30))
+    m.add_check("AFTER-START", coords={"milestone": tm.ANY}, expect=lambda x: x["baseline_date"] >= date(2026, 1, 1))
     assert m.check().ok
     m.set_value("forecast_date", {"milestone": "footings"}, "2026-05-01", SRC)
     (late,) = m.check().failures
@@ -112,15 +112,15 @@ def test_dt_fields(m):
 
 
 def test_mixing_dates_and_numbers_is_an_error(m):
-    m.add_check("BAD", coords={"milestone": tm.ANY}, expect=m["baseline_date"] > 0)
+    m.add_check("BAD", coords={"milestone": tm.ANY}, expect=lambda x: x["baseline_date"] > 0)
     run = m.check().results[0]
     assert not run.passed and "can't compare a date with a number" in run.error
-    with pytest.raises(tm.DefinitionError, match="can't compute date \\+ number"):
-        m.evaluate(m["baseline_date"] + 1)
+    with pytest.raises(tm.DefinitionError, match="can't compute date \\+ number.*timedelta"):
+        m.evaluate(lambda x: x["baseline_date"] + 1)
 
 
 def test_formula_result_must_match_dtype(m):
-    m.add_item("duration", ("milestone",), formula=m["forecast_date"] - m["baseline_date"])
+    m.add_item("duration", ("milestone",), formula=lambda x: x["forecast_date"] - x["baseline_date"])
     with pytest.raises(tm.DefinitionError, match=r"is float, but .* gave a timedelta.*\.days"):
         m.get("duration", milestone="footings")
 
@@ -132,7 +132,7 @@ def test_nil_date(m):
     m.add_check("DONE-OR-NIL", coords={"milestone": ["footings"]},
                 expect=lambda x: x["actual_date"].is_nil() or x["actual_date"] >= x["baseline_date"])
     assert m.check().ok
-    m.add_check("NO-GUARD", coords={"milestone": ["footings"]}, expect=m["actual_date"] >= m["baseline_date"])
+    m.add_check("NO-GUARD", coords={"milestone": ["footings"]}, expect=lambda x: x["actual_date"] >= x["baseline_date"])
     run = m.check().filter("NO-GUARD").results[0]
     assert not run.passed and "is nil" in run.error
 
@@ -146,7 +146,7 @@ def test_save_and_load(m, tmp_path):
     cutoff = date(2026, 6, 1)
     m.add_item("before_cutoff", ("milestone",), dtype=int,
                formula=lambda x, cutoff=cutoff: int(x["forecast_date"] < cutoff))
-    m.add_item("deadline", ("milestone",), dtype=date, formula=m["baseline_date"] + timedelta(days=14))
+    m.add_item("deadline", ("milestone",), dtype=date, formula=lambda x: x["baseline_date"] + timedelta(days=14))
     m.set_value("forecast_date", {"milestone": "topped_out"}, date(2026, 5, 28), SRC)
     m.save(tmp_path / "model.json")
     m.to_jsonl(tmp_path / "values.jsonl")
@@ -155,8 +155,9 @@ def test_save_and_load(m, tmp_path):
     saved = json.loads((tmp_path / "model.json").read_text())
     assert {i["name"]: i["dtype"] for i in saved["items"]}["baseline_date"] == "date"
 
-    again = tm.load(tmp_path / "model.json", allow_code=True)
-    again.load_jsonl(tmp_path / "values.jsonl", allow_code=True)
+    assert {i["name"]: i.get("env") for i in saved["items"]}["before_cutoff"] == {"cutoff": {"$date": "2026-06-01"}}
+    again = tm.load(tmp_path / "model.json")
+    again.load_jsonl(tmp_path / "values.jsonl")
     for item, coords in [("planned_cost", {"contract": "C-104", "month": "2026-05"}),
                          ("deadline", {"milestone": "footings"}),
                          ("before_cutoff", {"milestone": "topped_out"}),

@@ -1,6 +1,7 @@
 """Tests for tracemodel, driven by the Apple FY2024-FY2025 example."""
 
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -8,7 +9,6 @@ from pathlib import Path
 import pytest
 
 import tracemodel as tm
-from tracemodel.expr import Condition
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 from apple import SO, USD_M, build_model, enter_values
@@ -130,39 +130,40 @@ def test_item_description(empty, tmp_path):
 def test_check_definition(empty):
     check = empty.checks["DQ-1"]
     assert repr(check.expect) == (
-        "abs(net_sales['/'] - (net_sales['/products'] + net_sales['/services'])) <= 0.2"
+        "abs(x['net_sales']['/'] - (x['net_sales']['/products'] + x['net_sales']['/services'])) <= 0.2"
     )
     assert check.runs() == [{"period": "FY2024"}, {"period": "FY2025"}]
 
 
 def test_add_check_replaces_same_id(empty):
-    ns = empty["net_sales"]
     empty.add_check("DQ-1", coords={"period": "FY2025"},
-                    expect=ns["/"] == ns["/products"] + ns["/services"])
+                    expect=lambda x: x["net_sales"]["/"] == x["net_sales"]["/products"] + x["net_sales"]["/services"])
     assert len(empty.checks) == 1
     assert empty.checks["DQ-1"].runs() == [{"period": "FY2025"}]
 
 
 def test_check_with_unresolved_dim_rejected(empty):
-    ns = empty["net_sales"]
     with pytest.raises(tm.DefinitionError, match="period unresolved"):
-        empty.add_check("bad", expect=ns["/"] == ns["/services"])
+        empty.add_check("bad", expect=lambda x: x["net_sales"]["/"] == x["net_sales"]["/services"])
 
 
 def test_check_coords_must_be_open_in_some_cell(empty):
-    ns = empty["net_sales"]
-    fixed = ns.sel(sales_category="/", period="FY2025")
+    same = lambda x: x["net_sales"].sel(sales_category="/", period="FY2025") >= 0
     with pytest.raises(tm.DefinitionError, match="remove it from coords"):
-        empty.add_check("bad", coords={"period": tm.ANY}, expect=fixed == fixed)  # noqa: PLR0124 - builds a condition
-    assert empty.add_check("ok", expect=fixed == fixed).runs()  # noqa: PLR0124 == [{}]
+        empty.add_check("bad", coords={"period": tm.ANY}, expect=same)
+    assert empty.add_check("ok", expect=same).runs() == [{}]
 
 
-def test_sum_and_negation_display(empty):
-    ns = empty["net_sales"]
-    total = sum([ns["/products"], ns["/services"]])
-    assert repr(total) == "net_sales['/products'] + net_sales['/services']"
-    assert repr(-ns["/services"]) == "-net_sales['/services']"
-    assert repr(-total) == "-(net_sales['/products'] + net_sales['/services'])"
+@pytest.mark.parametrize("build, written", [
+    (lambda ns: ns * 0.6, "lambda x: x['net_sales'] * 0.6"),
+    (lambda ns: 2 * ns["/"], "lambda x: 2 * x['net_sales']['/']"),
+    (lambda ns: ns["/"] - ns["/services"], "lambda x: x['net_sales']['/'] - x['net_sales']['/services']"),
+    (lambda ns: ns["/"] >= 0, "lambda x: x['net_sales']['/'] >= 0"),
+    (lambda ns: ns["/"].is_nil(), "lambda x: x['net_sales']['/'].is_nil()"),
+])
+def test_arithmetic_on_cells_points_to_the_lambda(empty, build, written):
+    with pytest.raises(tm.DefinitionError, match=re.escape(written)):
+        build(empty["net_sales"])
 
 
 def test_unknown_label_rejected(empty):
@@ -262,11 +263,11 @@ def test_table_grid_and_html(model):
 
 
 def test_item_arithmetic_broadcasts(model):
-    t = model.evaluate(model["net_sales"]["/"] / model["shares_basic"])
+    t = model.evaluate(lambda x: x["net_sales"]["/"] / x["shares_basic"])
     assert t.columns == ["", "FY2024", "FY2025"]
     assert t.rows[0][2] == pytest.approx(416_161 / 14_948_500)
 
-    by_cat = model.evaluate(model["net_sales"] / model["shares_basic"])   # (sales_category, period)
+    by_cat = model.evaluate(lambda x: x["net_sales"] / x["shares_basic"])   # (sales_category, period)
     assert len(by_cat) == 7
     assert by_cat.rows[2][0] == "/products/iphone"
 
@@ -276,11 +277,12 @@ def test_scalar_expression(model):
 
 
 def test_comparison_shows_true_false_per_period(model):
-    t = model.evaluate(model["net_sales"]["/"] == model["net_sales"]["/products"] + model["net_sales"]["/services"])
+    t = model.evaluate(lambda x: x["net_sales"]["/"] == x["net_sales"]["/products"] + x["net_sales"]["/services"])
+    assert t.columns == ["period", "left", "right", "diff", "result"]
     assert [r[0] for r in t.rows] == ["FY2024", "FY2025"]
     assert [r[-1] for r in t.rows] == [True, True]
     with pytest.raises(tm.DefinitionError):
-        bool(model["net_sales"]["/"] == 1)
+        bool(model["net_sales"]["/"])
 
 
 def test_missing_cells_show_blank(model):
@@ -301,11 +303,10 @@ def test_jsonl_round_trip(model, tmp_path):
     assert loaded.check().ok
 
 
-# -- conditions: any comparison, joined with & | ~ ----------------------------
+# -- checks: any comparison, joined with and / or / not -------------------------
 
 def test_inequality_check_runs_per_coord(model):
-    ns = model["net_sales"]
-    model.add_check("SIGN-1", coords={"sales_category": tm.ANY, "period": tm.ANY}, expect=ns >= 0)
+    model.add_check("SIGN-1", coords={"sales_category": tm.ANY, "period": tm.ANY}, expect=lambda x: x["net_sales"] >= 0)
     sign = [r for r in model.check().results if r.check.id == "SIGN-1"]
     assert len(sign) == 14 and all(r.passed for r in sign)
     model.set_value("net_sales", {"sales_category": "/products/mac", "period": "FY2025"}, -1, source=SO)
@@ -315,31 +316,24 @@ def test_inequality_check_runs_per_coord(model):
 
 
 def test_and_or_not(model):
-    gm, ns = model["gross_margin"], model["net_sales"]
-    band = (gm["/"] / ns["/"] >= 0.30) & (gm["/"] / ns["/"] <= 0.60)
-    assert repr(band) == "(gross_margin['/'] / net_sales['/'] >= 0.3) & (gross_margin['/'] / net_sales['/'] <= 0.6)"
-    model.add_check("RANGE-1", coords={"period": tm.ANY}, expect=band)
-    model.add_check("NOT-1", coords={"period": tm.ANY}, expect=~(ns["/services"] > ns["/products"]))
+    band = lambda x: x["gross_margin"]["/"] / x["net_sales"]["/"] >= 0.30 and x["gross_margin"]["/"] / x["net_sales"]["/"] <= 0.60
+    check = model.add_check("RANGE-1", coords={"period": tm.ANY}, expect=band)
+    assert repr(check.expect) == ("x['gross_margin']['/'] / x['net_sales']['/'] >= 0.3 and "
+                                  "x['gross_margin']['/'] / x['net_sales']['/'] <= 0.6")
+    model.add_check("NOT-1", coords={"period": tm.ANY},
+                    expect=lambda x: not x["net_sales"]["/services"] > x["net_sales"]["/products"])
     model.add_check("OR-1", coords={"period": tm.ANY},
-                    expect=(model["operating_expense"]["/rnd"] > 0) | (model["operating_expense"]["/rnd"] == 0))
+                    expect=lambda x: x["operating_expense"]["/rnd"] > 0 or x["operating_expense"]["/rnd"] == 0)
+    model.add_check("CHAIN-1", coords={"period": tm.ANY},
+                    expect=lambda x: 0 <= x["gross_margin"]["/"] / x["net_sales"]["/"] <= 1)
     assert model.check().ok
     t = model.evaluate(band)
     assert t.columns[-1] == "result" and [r[-1] for r in t.rows] == [True, True]
+    assert len(t.columns) == 4  # period, each part, the whole
 
 
-@pytest.mark.parametrize("build", [
-    lambda ns: 0 <= ns["/"] <= 1,                    # chained comparison calls bool()
-    lambda ns: (ns["/"] > 0) and (ns["/"] < 1),      # `and` calls bool()
-    lambda ns: ns["/"] >= 0 & ns["/"] >= 0,          # & binds before >=
-    lambda ns: (ns["/"] > 0) & 1,
-])
-def test_python_pitfalls_explain_themselves(empty, build):
-    with pytest.raises(tm.DefinitionError, match="parentheses"):
-        build(empty["net_sales"])
-
-
-def test_expect_must_be_a_condition(empty):
-    with pytest.raises(tm.DefinitionError, match="`expect` must be a condition"):
+def test_expect_must_be_a_lambda(empty):
+    with pytest.raises(tm.DefinitionError, match="`expect` must be a lambda of x"):
         empty.add_check("bad", coords={"period": tm.ANY}, expect=empty["net_sales"]["/"])
 
 
@@ -351,18 +345,15 @@ def test_print_model_shows_descriptions_and_attrs(empty):
     assert "net_sales            (sales_category, period)  float  units=USD scale=millions" in text
 
 
-# -- function checks: expect(dim, ...) builds the condition for each label ----
+# -- rollups: a check over a hierarchy's labels reads each label's children ---
 
-def test_function_check_builds_one_condition_per_label(model):
-    ns = model["net_sales"]
-    sales = model.dimensions["sales_category"].hierarchy
+def test_rollup_check_reads_each_labels_children(model):
     check = model.add_check("NS-SUM",
         coords={"sales_category": ["/", "/products"], "period": tm.ANY},
-        expect=lambda sales_category: abs(ns[sales_category] - sum(ns[c] for c in sales.children(sales_category))) <= 0.2)
-    assert check.params == ("sales_category",)
-    assert repr(check.condition({"sales_category": "/products", "period": "FY2024"})) == (
-        "abs(net_sales['/products'] - (net_sales['/products/iphone'] + net_sales['/products/mac']"
-        " + net_sales['/products/ipad'] + net_sales['/products/wearables'])) <= 0.2")
+        expect=lambda x: abs(x["net_sales"] - sum(x["net_sales"].sel(sales_category=c)
+                                                  for c in x.children("sales_category"))) <= 0.2)
+    assert repr(check.expect) == ("abs(x['net_sales'] - sum(x['net_sales'].sel(sales_category=c) "
+                                  "for c in x.children('sales_category'))) <= 0.2")
     runs = [r for r in model.check().results if r.check.id == "NS-SUM"]
     assert [r.at for r in runs] == [
         {"sales_category": "/", "period": "FY2024"}, {"sales_category": "/", "period": "FY2025"},
@@ -373,26 +364,24 @@ def test_function_check_builds_one_condition_per_label(model):
     model.set_value("net_sales", {"sales_category": "/products/mac", "period": "FY2025"}, 1, source=SO)
     (fail,) = model.check().failures
     assert fail.at == {"sales_category": "/products", "period": "FY2025"}
-    assert "NS-SUM" in repr(model) and "expect(sales_category)" in repr(model)
+    assert "NS-SUM" in repr(model) and "x.children('sales_category')" in repr(model)
 
 
-def test_function_check_with_two_dims(model):
-    ns = model["net_sales"]
+def test_check_over_two_dims(model):
     model.add_check("ORD-1",
         coords={"sales_category": ["/products", "/services"], "period": tm.ANY},
-        expect=lambda sales_category, period: ns.sel(sales_category=sales_category, period=period)
-                                              <= ns.sel(sales_category="/", period=period))
+        expect=lambda x: x["net_sales"] <= x["net_sales"]["/"])
     assert model.check().ok
-    assert len(model.checks["ORD-1"].conditions) == 4
+    assert len(model.checks["ORD-1"].runs()) == 4
 
 
 @pytest.mark.parametrize("expect, match", [
-    (lambda region: None, "not a dim in coords"),
+    (lambda sales_category: True, "a check is a lambda of the run, x"),
     (lambda *dims: None, r"\*args"),
-    (lambda: None, "at least one dim"),
-    (lambda sales_category: 1.0, "must return a condition"),
+    (lambda: None, "exactly one argument"),
+    (lambda x, y: True, "exactly one argument"),
 ])
-def test_function_check_errors(empty, expect, match):
+def test_check_lambda_errors(empty, expect, match):
     with pytest.raises(tm.DefinitionError, match=match):
         empty.add_check("bad", coords={"sales_category": ["/"], "period": tm.ANY}, expect=expect)
 
@@ -408,10 +397,9 @@ def test_lag_lead_shift_display(empty):
 
 
 def test_lag_check_reads_the_prior_period(model):
-    ns = model["net_sales"]
     check = model.add_check("GROWTH-1",
         coords={"period": model.dimensions["period"].coords[1:]},
-        expect=ns["/"] > ns["/"].lag("period"))
+        expect=lambda x: x["net_sales"]["/"] > x["net_sales"]["/"].lag("period"))
     assert check.runs() == [{"period": "FY2025"}]
     (run,) = [r for r in model.check().results if r.check.id == "GROWTH-1"]
     assert run.passed and (run.lhs, run.rhs) == (416_161, 391_035)
@@ -419,13 +407,14 @@ def test_lag_check_reads_the_prior_period(model):
 
 
 def test_lag_past_the_first_label_is_a_definition_error(empty):
-    ns = empty["net_sales"]
     with pytest.raises(tm.DefinitionError, match=r"no period before 'FY2024'.*coords\[1:\]"):
-        empty.add_check("bad", coords={"period": tm.ANY}, expect=ns["/"] > ns["/"].lag("period"))
+        empty.add_check("bad", coords={"period": tm.ANY},
+                        expect=lambda x: x["net_sales"]["/"] > x["net_sales"]["/"].lag("period"))
     with pytest.raises(tm.DefinitionError, match=r"no period after 'FY2025'.*coords\[:-1\]"):
-        empty.add_check("bad", coords={"period": tm.ANY}, expect=ns["/"] < ns["/"].lead("period"))
+        empty.add_check("bad", coords={"period": tm.ANY},
+                        expect=lambda x: x["net_sales"]["/"] < x["net_sales"]["/"].lead("period"))
     empty.add_check("ok", coords={"period": empty.dimensions["period"].coords[:-1]},
-                    expect=ns["/"] < ns["/"].lead("period"))
+                    expect=lambda x: x["net_sales"]["/"] < x["net_sales"]["/"].lead("period"))
 
 
 def test_lag_displays_blank_for_the_first_period(model):
@@ -446,7 +435,7 @@ def _nil_model():
     m.add_dimension("period", ["FY24"])
     m.add_item("cost", ("segment", "period"), dtype=float)
     m.add_check("SUM", coords={"period": tm.ANY},
-                expect=m["cost"]["/"] == m["cost"]["/a"] + m["cost"]["/corp"])
+                expect=lambda x: x["cost"]["/"] == x["cost"]["/a"] + x["cost"]["/corp"])
     for seg, v in [("/", 5), ("/a", 5)]:
         m.set_value("cost", {"segment": seg, "period": "FY24"}, v, SO)
     return m
@@ -489,8 +478,8 @@ def _formula_model():
     m.add_dimension("period", ["FY24", "FY25"])
     m.add_item("sales", ("period",))
     m.add_item("cogs", ("period",))
-    m.add_item("gm_pct", ("period",), formula=(m["sales"] - m["cogs"]) / m["sales"])
-    m.add_check("GM", coords={"period": tm.ANY}, expect=m["gm_pct"] >= 0.3)
+    m.add_item("gm_pct", ("period",), formula=lambda x: (x["sales"] - x["cogs"]) / x["sales"])
+    m.add_check("GM", coords={"period": tm.ANY}, expect=lambda x: x["gm_pct"] >= 0.3)
     for p, a, b in [("FY24", 100, 60), ("FY25", 200, 100)]:
         m.set_value("sales", {"period": p}, a, SO)
         m.set_value("cogs", {"period": p}, b, SO)
@@ -504,17 +493,17 @@ def test_formula_item_is_calculated_and_traced():
     r = m.check()
     assert r.ok
     assert [c.item for c in r.results[0].cells] == ["gm_pct", "sales", "cogs"]   # the formula's inputs
-    assert "= (sales - cogs) / sales" in repr(m)
+    assert "= (x['sales'] - x['cogs']) / x['sales']" in repr(m)
 
 
 def test_formula_missing_input_is_missing():
     m = tm.Model()
     m.add_dimension("period", ["FY24"])
     m.add_item("sales", ("period",))
-    m.add_item("double", ("period",), formula=m["sales"] * 2)
+    m.add_item("double", ("period",), formula=lambda x: x["sales"] * 2)
     with pytest.raises(tm.MissingValue):
         m.get("double", period="FY24")
-    m.add_check("D", coords={"period": tm.ANY}, expect=m["double"] > 0)
+    m.add_check("D", coords={"period": tm.ANY}, expect=lambda x: x["double"] > 0)
     assert m.check().table().rows[0][2] == "missing"
 
 
@@ -529,66 +518,68 @@ def test_formula_override_with_set_value(tmp_path):
     m2.add_dimension("period", ["FY24", "FY25"])
     m2.add_item("sales", ("period",))
     m2.add_item("cogs", ("period",))
-    m2.add_item("gm_pct", ("period",), formula=(m2["sales"] - m2["cogs"]) / m2["sales"])
+    m2.add_item("gm_pct", ("period",), formula=lambda x: (x["sales"] - x["cogs"]) / x["sales"])
     m2.load_jsonl(path)
     assert m2.entry("gm_pct", period="FY24").overrides_formula
 
 
-@pytest.mark.parametrize("formula, match", [
-    (lambda m: m["sales"] > 1, "must be an expression"),
-    (lambda m: 3, "must be an expression"),
-    (lambda m: m["sales"], "open in period"),
+@pytest.mark.parametrize("formula, error, match", [
+    (lambda x: x["sales"] > 1, tm.DefinitionError, "open in period"),
+    (3, tm.DefinitionError, "must be a lambda"),
+    (lambda x: x["sales"], tm.DefinitionError, "open in period"),
+    ("lambda x: x['sales'].sel(period='FY24') +", tm.DefinitionError, "invalid syntax"),
+    (lambda x: x["sale"].sel(period="FY24"), tm.UnknownItem, "'sale' is neither an item nor a label"),
 ])
-def test_formula_errors(formula, match):
+def test_formula_errors(formula, error, match):
     m = tm.Model()
     m.add_dimension("period", ["FY24"])
     m.add_item("sales", ("period",))
-    with pytest.raises(tm.DefinitionError, match=match):
-        m.add_item("x", (), formula=formula(m))
+    with pytest.raises(error, match=match):
+        m.add_item("x", (), formula=formula)
+    assert "x" not in m.items
 
 
 def test_formula_redefinition():
     m = _formula_model()
-    m.add_item("gm_pct", ("period",), formula=(m["sales"] - m["cogs"]) / m["sales"])   # same: no-op
+    m.add_item("gm_pct", ("period",), formula=lambda x: (x["sales"] - x["cogs"]) / x["sales"])   # same: no-op
     with pytest.raises(tm.DefinitionError):
-        m.add_item("gm_pct", ("period",), formula=m["sales"] / m["cogs"])
+        m.add_item("gm_pct", ("period",), formula=lambda x: x["sales"] / x["cogs"])
 
 
 def test_is_nil_tells_nil_from_zero():
     m = _nil_model()
-    m.add_check("NIL-1", coords={"period": tm.ANY}, expect=m["cost"]["/corp"].is_nil())
+    m.add_check("NIL-1", coords={"period": tm.ANY}, expect=lambda x: x["cost"]["/corp"].is_nil())
     assert m.check().table().rows[1][2] == "missing"                    # not entered isn't nil
     m.set_value("cost", {"segment": "/corp", "period": "FY24"}, 0.0, SO)
     assert m.check().table().rows[1][2] == "FAIL"                       # a typed 0 isn't nil
     m.set_value("cost", {"segment": "/corp", "period": "FY24"}, tm.NIL, SO)
     assert m.check().ok
-    assert repr(m.checks["NIL-1"].expect) == "cost['/corp'].is_nil()"
-    assert m.evaluate(~m["cost"].is_nil()).rows[-1][-1] is False       # /corp, negated
+    assert repr(m.checks["NIL-1"].expect) == "x['cost']['/corp'].is_nil()"
+    assert m.evaluate(lambda x: not x["cost"].is_nil()).rows[-1][-1] is False       # /corp, negated
 
 
 def test_warning_checks_dont_fail_the_report():
     m = _formula_model()
-    m.add_check("GM-HIGH", coords={"period": tm.ANY}, expect=m["gm_pct"] >= 0.45, severity="warning")
+    m.add_check("GM-HIGH", coords={"period": tm.ANY}, expect=lambda x: x["gm_pct"] >= 0.45, severity="warning")
     r = m.check()
     assert r.ok and len(r.failures) == 1 and len(r.warnings) == 1 and r.errors == []
     assert "warn" in [row[2] for row in r.table().rows]
     assert r.table().title.endswith("1 warning")
     assert "(warning)" in repr(m)
-    m.add_check("GM-LOW", coords={"period": tm.ANY}, expect=m["gm_pct"] >= 0.45)
+    m.add_check("GM-LOW", coords={"period": tm.ANY}, expect=lambda x: x["gm_pct"] >= 0.45)
     assert not m.check().ok
     with pytest.raises(tm.DefinitionError, match="severity"):
-        m.add_check("X", coords={"period": tm.ANY}, expect=m["gm_pct"] >= 0, severity="info")
+        m.add_check("X", coords={"period": tm.ANY}, expect=lambda x: x["gm_pct"] >= 0, severity="info")
 
 
 def test_save_and_load_round_trip(tmp_path, model):
-    rev = model["net_sales"]
-    cats = model.dimensions["sales_category"].hierarchy
     model.add_check("ROLLUP", coords={"sales_category": ["/", "/products"], "period": tm.ANY},
-                    expect=lambda sales_category: abs(rev[sales_category] - sum(
-                        rev[c] for c in cats.children(sales_category))) <= 1)
+                    expect=lambda x: abs(x["net_sales"] - sum(
+                        x["net_sales"].sel(sales_category=c) for c in x.children("sales_category"))) <= 1)
     model.add_check("GROWTH", coords={"period": model.dimensions["period"].coords[1:]},
-                    expect=rev["/"] >= rev["/"].lag("period"), severity="warning", description="grows")
-    model.add_item("growth", ("period",), formula=rev["/"] / rev["/"].lag("period") - 1)
+                    expect=lambda x: x["net_sales"]["/"] >= x["net_sales"]["/"].lag("period"),
+                    severity="warning", description="grows")
+    model.add_item("growth", ("period",), formula=lambda x: x["net_sales"]["/"] / x["net_sales"]["/"].lag("period") - 1)
     model.save(tmp_path / "m.json")
     model.to_jsonl(tmp_path / "v.jsonl")
     loaded = tm.load(tmp_path / "m.json")
@@ -600,22 +591,26 @@ def test_save_and_load_round_trip(tmp_path, model):
     assert str(loaded.table("growth")) == str(model.table("growth"))
     saved = loaded.to_dict()
     assert {c["id"]: c["coords"] for c in saved["checks"]}["ROLLUP"]["period"] == "ANY"
-    assert loaded.checks["ROLLUP"].expect(sales_category="/products") is loaded.checks["ROLLUP"].conditions[("/products",)]
+    assert {c["id"]: c["expect"] for c in saved["checks"]}["GROWTH"] == (
+        "lambda x: x['net_sales']['/'] >= x['net_sales']['/'].lag('period')")
+    assert loaded.to_dict() == tm.Model.from_dict(loaded.to_dict()).to_dict()   # load -> save is stable
 
 
-@pytest.mark.parametrize("text, match", [
-    ("__import__('os').system('true')", "not part of the expression grammar"),
-    ("net_sales.__class__", "not part of the expression grammar"),
-    ("(lambda: 1)()", "not part of the expression grammar"),
-    ("net_sales['/'].evaluate_table()", "not part of the expression grammar"),
-    ("open_file", "not a declared item"),
-    ("abs(1) <", "can't read expression"),
-    ("net_sales['/'].lag(period)", "must be a label or a whole number"),
+@pytest.mark.parametrize("text, error, match", [
+    ("__import__('os').system('true')", tm.DefinitionError, "not part of the expression grammar"),
+    ("net_sales.__class__", tm.DefinitionError, "not part of the expression grammar"),
+    ("(lambda: 1)()", tm.DefinitionError, "not part of the expression grammar"),
+    ("net_sales['/'].evaluate_table()", tm.DefinitionError, "can't use .evaluate_table"),
+    ("open_file", tm.UnknownItem, "'open_file' is neither an item"),
+    ("abs(1) <", tm.DefinitionError, "can't read expression"),
+    ("lambda x: x._model", tm.DefinitionError, "attributes starting with _"),
+    ("lambda x: __import__('os')", tm.DefinitionError, "isn't a function a formula may call"),
 ])
-def test_load_reads_only_the_expression_grammar(model, text, match):
-    from tracemodel.text import parse
-    with pytest.raises(tm.DefinitionError, match=match):
-        parse(text, model)
+def test_load_reads_only_formulas(model, text, error, match):
+    data = model.to_dict()
+    data["items"].append({"name": "t", "dims": ["period"], "dtype": "float", "formula": text})
+    with pytest.raises(error, match=match):
+        tm.Model.from_dict(data)
 
 
 def test_load_rejects_other_files_and_bad_attrs(tmp_path, model):
@@ -633,8 +628,8 @@ def test_repr_uses_sel_when_a_label_is_in_two_dims():
     m.add_item("v", ("a", "b"))
     cell = m["v"].sel(a="x")
     assert repr(cell) == "v.sel(a='x')"
-    from tracemodel.text import parse
-    assert parse(repr(cell), m).coords == {"a": "x"}
+    from tracemodel.convert import from_text
+    assert from_text(repr(cell)) == "lambda x: x['v'].sel(a='x')"
 
 
 def _projection_model():
@@ -655,7 +650,7 @@ def test_formula_reads_its_own_earlier_cells():
     assert m.get("revenue", period="FY2027") == pytest.approx(416_161 * 1.03 ** 2)
     assert repr(m.items["revenue"].formula) == "revenue.lag('period') * 1.03"
     m.add_check("G", coords={"period": m.dimensions["period"].coords[1:]},
-                expect=m["revenue"] >= m["revenue"].lag("period"))
+                expect=lambda x: x["revenue"] >= x["revenue"].lag("period"))
     run = next(r for r in m.check().results if r.at == {"period": "FY2027"})
     assert [c.coords["period"] for c in run.cells] == ["FY2027", "FY2026", "FY2025"]   # back to the actuals
 
@@ -675,7 +670,7 @@ def test_cell_formula_with_set_value():
     assert m.get("fee", contract="C-104", period="FY2026") == pytest.approx(112.2)
     assert m.get("fee", contract="C-104", period="FY2027") == pytest.approx(112.2 * 1.02)  # item formula after
     assert m.get("fee", contract="C-101", period="FY2026") == pytest.approx(104.04)
-    m.set_value("fee", {"contract": "C-101", "period": "FY2025"}, m["fee"]["C-104"] * 2, SO)  # an expression works too
+    m.set_value("fee", {"contract": "C-101", "period": "FY2025"}, "lambda x: x['fee']['C-104'] * 2", SO)  # or its text
     assert m.get("fee", contract="C-101", period="FY2025") == pytest.approx(204)
     assert "= fee.lag('period') * 1.1" in str(m.entry("fee"))
 
@@ -683,7 +678,7 @@ def test_cell_formula_with_set_value():
 @pytest.mark.parametrize("make", [
     lambda m: m.add_item("x", ("period",), formula=lambda x: x.lag("period") + x.lead("period")),
     lambda m: m.add_item("y", ("period",), formula=lambda y: y * 2),
-    lambda m: m.set_value("revenue", {"period": "FY2026"}, m["revenue"].lead("period"), SO),
+    lambda m: m.set_value("revenue", {"period": "FY2026"}, lambda x: x.lead("period"), SO),
 ])
 def test_circular_formulas_are_rejected(make):
     m = _projection_model()
@@ -699,7 +694,7 @@ def test_projection_save_and_load(tmp_path):
     m.set_value("fee", {"contract": "C-104", "period": "FY2026"}, lambda fee: fee.lag("period") * 1.10, msa)
     m.save(tmp_path / "m.json")
     m.to_jsonl(tmp_path / "v.jsonl")
-    assert '"formula": "fee.lag(\'period\') * 1.1"' in (tmp_path / "v.jsonl").read_text()
+    assert '"formula": "lambda fee: fee.lag(\'period\') * 1.1"' in (tmp_path / "v.jsonl").read_text()
     loaded = tm.load(tmp_path / "m.json")
     loaded.load_jsonl(tmp_path / "v.jsonl")
     assert repr(loaded) == repr(m)
@@ -709,11 +704,9 @@ def test_projection_save_and_load(tmp_path):
 
 def test_add_coords_appends_and_reexpands_any_checks(tmp_path):
     m = _projection_model()
-    rev = m["revenue"]
-    m.add_check("POS", coords={"period": tm.ANY}, expect=rev >= 0)
-    m.add_check("FIRST2", coords={"period": ["FY2024", "FY2025"]}, expect=rev >= 0)
-    m.add_check("FEE", coords={"contract": tm.ANY, "period": tm.ANY},
-                expect=lambda contract: m["fee"][contract] >= 0)
+    m.add_check("POS", coords={"period": tm.ANY}, expect=lambda x: x["revenue"] >= 0)
+    m.add_check("FIRST2", coords={"period": ["FY2024", "FY2025"]}, expect=lambda x: x["revenue"] >= 0)
+    m.add_check("FEE", coords={"contract": tm.ANY, "period": tm.ANY}, expect=lambda x: x["fee"] >= 0)
     m.add_coords("period", [("FY2028", "Fiscal 2028", {"kind": "forecast"}), "FY2029"])
     assert m.dimensions["period"].coords[-2:] == ("FY2028", "FY2029")
     assert m.dimensions["period"].attrs("FY2028") == {"kind": "forecast"}
@@ -735,19 +728,16 @@ def test_add_coords_to_a_hierarchy_needs_the_parent():
     assert "/c/z" not in m.dimensions["line"]
 
 
-def test_add_coords_refuses_a_loaded_function_check_and_changes_nothing(tmp_path):
+def test_add_coords_reexpands_loaded_checks(tmp_path):
     m = _projection_model()
-    m.add_check("FEE", coords={"contract": tm.ANY, "period": tm.ANY},
-                expect=lambda contract: m["fee"][contract] >= 0)
-    m.add_check("POS", coords={"period": tm.ANY}, expect=m["revenue"] >= 0)
+    m.add_check("FEE", coords={"contract": tm.ANY, "period": tm.ANY}, expect=lambda x: x["fee"] >= 0)
+    m.add_check("POS", coords={"period": tm.ANY}, expect=lambda x: x["revenue"] >= 0)
     m.save(tmp_path / "m.json")
     loaded = tm.load(tmp_path / "m.json")
-    loaded.add_coords("period", ["FY2028"])                       # FEE's function dim is contract: fine
+    loaded.add_coords("period", ["FY2028"])
     assert len(loaded.checks["FEE"].runs()) == 10 and len(loaded.checks["POS"].runs()) == 5
-    with pytest.raises(tm.DefinitionError, match="add it again with its function"):
-        loaded.add_coords("contract", ["C-200"])
-    assert "C-200" not in loaded.dimensions["contract"]
-    assert len(loaded.checks["FEE"].runs()) == 10
+    loaded.add_coords("contract", ["C-200"])                      # a loaded check is a lambda: it covers it too
+    assert len(loaded.checks["FEE"].runs()) == 15
 
 
 def test_remove_dimension_only_when_no_item_uses_it():
@@ -771,7 +761,7 @@ def test_long_chains_are_linear():
     m = tm.Model()
     m.add_dimension("period", [f"P{i:03}" for i in range(300)])
     m.add_item("a", ("period",), formula=lambda a: a.lag("period") * 1.001)
-    m.add_item("b", ("period",), formula=lambda b: b.lag("period") + m["a"] + m["a"].lag("period"))
+    m.add_item("b", ("period",), formula=lambda b: b.lag("period") + b["a"] + b["a"].lag("period"))
     m.set_value("a", {"period": "P000"}, 1, SO)
     m.set_value("b", {"period": "P000"}, 0, SO)
     assert m.get("b", period="P299") > 0                            # would take ~2^300 steps uncached
@@ -780,17 +770,32 @@ def test_long_chains_are_linear():
 def test_transaction_defers_cycle_checks_to_commit():
     m = tm.Model()
     m.add_dimension("period", ["FY2025", "FY2026"])
-    m.add_item("a", ("period",), formula=lambda a: m["b"] if "b" in m.items else a.lag("period"))
-    m.add_item("b", ("period",), formula=m["a"] * 2)
+    m.add_item("a", ("period",), formula=lambda a: a.lag("period"))
+    m.add_item("b", ("period",), formula=lambda x: x["a"] * 2)
     m.set_value("a", {"period": "FY2025"}, 1, SO)
     # outside a transaction, a formula that loops for now is rejected at once
     with pytest.raises(tm.DefinitionError, match="circular"):
-        m.set_value("a", {"period": "FY2026"}, m["b"] + 1, SO)
+        m.set_value("a", {"period": "FY2026"}, lambda x: x["b"] + 1, SO)
     # inside one, the loop only has to be gone by commit
     with m.transaction():
-        m.set_value("a", {"period": "FY2026"}, m["b"] + 1, SO)     # a -> b -> a, for now
-        m.set_value("b", {"period": "FY2026"}, 10, SO)             # b entered: the loop is gone
+        m.set_value("a", {"period": "FY2026"}, lambda x: x["b"] + 1, SO)     # a -> b -> a, for now
+        m.set_value("b", {"period": "FY2026"}, 10, SO)                       # b entered: the loop is gone
     assert m.get("a", period="FY2026") == 11
+
+
+def test_a_formula_may_read_an_item_added_later_in_a_transaction():
+    m = tm.Model()
+    m.add_dimension("period", ["FY2025", "FY2026"])
+    with pytest.raises(tm.UnknownItem, match="'later' is neither an item"):
+        m.add_item("early", ("period",), formula=lambda x: x["later"] + 1)
+    assert "early" not in m.items
+    with m.transaction():
+        m.add_item("early", ("period",), formula=lambda x: x["later"] + 1)
+        m.add_item("later", ("period",), formula=lambda x: 2)
+    assert m.get("early", period="FY2026") == 3
+    with pytest.raises(tm.UnknownItem), m.transaction():
+        m.add_item("orphan", ("period",), formula=lambda x: x["never"])
+    assert "orphan" not in m.items
 
 
 def test_transaction_rolls_back_on_failed_commit_or_exception():
@@ -799,7 +804,7 @@ def test_transaction_rolls_back_on_failed_commit_or_exception():
     with pytest.raises(tm.DefinitionError, match="circular"), m.transaction():
         m.add_coords("period", ["FY2028"])
         m.set_value("revenue", {"period": "FY2024"}, 1, SO)
-        m.set_value("revenue", {"period": "FY2026"}, m["revenue"].lead("period"), SO)
+        m.set_value("revenue", {"period": "FY2026"}, lambda x: x.lead("period"), SO)
     assert (repr(m), len(m), m.get("revenue", period="FY2027")) == before
     with pytest.raises(ZeroDivisionError), m.transaction():
         m.set_value("revenue", {"period": "FY2024"}, 1, SO)
@@ -820,7 +825,7 @@ def test_one_transaction_at_a_time_and_reads_inside_see_changes():
             m.transaction()
         m.set_value("revenue", {"period": "FY2025"}, 500_000, SO)
         assert m.get("revenue", period="FY2026") == pytest.approx(515_000)
-        m.set_value("revenue", {"period": "FY2026"}, m["revenue"].lead("period"), SO)
+        m.set_value("revenue", {"period": "FY2026"}, lambda x: x.lead("period"), SO)
         with pytest.raises(tm.DefinitionError, match="circular formula at"):  # read while looping
             m.get("revenue", period="FY2026")
         m.set_value("revenue", {"period": "FY2026"}, 1, SO)
@@ -862,20 +867,23 @@ def test_function_formula_runs_per_cell_with_plain_python():
     assert m.table("revolver").rows[0][1:] == [0, 7_000, 0]
     assert m.table("tax").rows[0][1:] == [2_000, 0, 0]
     assert m.table("label").rows[0][1:] == [0, 1, 0]
-    assert 'lambda x: max(0, FLOOR - x["cash"])' in repr(m)
-    m.add_check("RV", coords={"period": tm.ANY}, expect=m["revolver"] >= 0)
+    assert "= max(0, FLOOR - x['cash'])" in repr(m)
+    m.add_check("RV", coords={"period": tm.ANY}, expect=lambda x: x["revolver"] >= 0)
     run = m.check().results[1]
     assert [(c.item, c.value) for c in run.cells] == [("revolver", 7_000), ("cash", 18_000)]
 
 
-def test_function_in_the_expression_grammar_becomes_an_expression():
+def test_formula_text_and_add_time_checks():
     m = _cash_model()
     m.add_item("spare", ("period",), formula=lambda x: x["cash"] - FLOOR)
     m.add_item("grow", ("period",), formula=lambda g: g.lag("period") * 1.03)
-    assert repr(m.items["spare"].formula) == "cash - 25000"
-    assert repr(m.items["grow"].formula) == "grow.lag('period') * 1.03"
-    with pytest.raises(tm.DefinitionError, match="circular"):           # expressions keep add-time checks
+    assert repr(m.items["spare"].formula) == "x['cash'] - FLOOR"
+    assert m.items["spare"].formula.env == {"FLOOR": 25_000}
+    assert repr(m.items["grow"].formula) == "g.lag('period') * 1.03"
+    with pytest.raises(tm.DefinitionError, match="circular"):           # every formula is checked when added
         m.add_item("bad", ("period",), formula=lambda b: b * 2)
+    with pytest.raises(tm.DefinitionError, match="circular"):           # both arms of a branch count
+        m.add_item("worse", ("period",), formula=lambda x: x["cash"] if x["cash"] > 0 else x["worse"])
 
 
 def test_function_formula_missing_input_and_cell_formula():
@@ -886,7 +894,7 @@ def test_function_formula_missing_input_and_cell_formula():
     m.set_value("debt", {"period": "FY2027"}, 20_000, SO)
     m.set_value("net", {"period": "FY2028"}, lambda x: min(x["cash"], 1_000), SO)   # a cell formula
     assert m.table("net").rows[0][1:] == [None, 0, 1_000]
-    assert "= lambda x: min(x[\"cash\"], 1_000)" in str(m.entry("net"))
+    assert "= min(x['cash'], 1000)" in str(m.entry("net"))
 
 
 def test_function_formula_long_chain_and_loop():
@@ -895,42 +903,36 @@ def test_function_formula_long_chain_and_loop():
     m.add_item("a", ("period",), formula=lambda x: max(0, x.lag("period") + 1))
     m.set_value("a", {"period": "P0000"}, 0, SO)
     assert m.get("a", period="P1999") == 1_999
-    m.add_item("b", ("period",), formula=lambda x: max(0, x["b"] + 1))     # reads itself
-    with pytest.raises(tm.DefinitionError, match="circular formula"):
-        m.get("b", period="P0001")
+    with pytest.raises(tm.DefinitionError, match="circular formula"):     # reads itself
+        m.add_item("b", ("period",), formula=lambda x: max(0, x["b"] + 1))
 
 
-def test_function_formulas_save_and_load_with_allow_code(tmp_path):
+def test_formulas_save_and_load_without_allow_code(tmp_path):
     m = _cash_model()
     m.add_item("revolver", ("period",), formula=lambda x: max(0, FLOOR - x["cash"]))
-    m.add_item("log_cash", ("period",), formula=lambda x: __import__("math").log(x["cash"]) if x["cash"] > 0 else 0)
+    m.add_item("log_cash", ("period",), formula=lambda x: math.log(x["cash"]) if x["cash"] > 0 else 0)
     m.set_value("revolver", {"period": "FY2028"}, lambda x: min(FLOOR, x["cash"]), SO)
     m.save(tmp_path / "m.json")
     m.to_jsonl(tmp_path / "v.jsonl")
     saved = (tmp_path / "m.json").read_text()
-    assert '"python": "lambda x: max(0, FLOOR - x[\\"cash\\"])"' in saved and '"FLOOR": 25000' in saved
-    with pytest.raises(tm.DefinitionError, match="allow_code=True"):
-        tm.load(tmp_path / "m.json")
-    loaded = tm.load(tmp_path / "m.json", allow_code=True)
-    with pytest.raises(tm.DefinitionError, match="allow_code=True"):
-        loaded.load_jsonl(tmp_path / "v.jsonl")
-    assert len(loaded) == 0                                                # nothing half-loaded
-    loaded.load_jsonl(tmp_path / "v.jsonl", allow_code=True)
+    assert '"formula": "lambda x: max(0, FLOOR - x[\'cash\'])"' in saved and '"FLOOR": 25000' in saved
+    loaded = tm.load(tmp_path / "m.json")
+    loaded.load_jsonl(tmp_path / "v.jsonl")
     assert str(loaded.table("revolver")) == str(m.table("revolver"))
     assert str(loaded.table("log_cash")) == str(m.table("log_cash"))
+    with pytest.warns(DeprecationWarning, match="allow_code is ignored"):
+        tm.load(tmp_path / "m.json", allow_code=True)
 
 
-def test_function_formula_that_cannot_be_saved():
+def test_formula_that_cannot_be_written_down():
     m = _cash_model()
     helper = object()
-    m.add_item("odd", ("period",), formula=lambda x: max(0, x["cash"]) if helper else 0)
-    with pytest.raises(tm.DefinitionError, match="it uses 'helper'"):
-        m.to_dict()
-    m2 = _cash_model()
-    m2.add_item("f", ("period",), formula=eval('lambda x: max(0, x["cash"])'))   # no source file
-    assert m2.get("f", period="FY2026") == 40_000
+    with pytest.raises(tm.DefinitionError, match="uses 'helper'"):        # refused when added, not when saved
+        m.add_item("odd", ("period",), formula=lambda x: max(0, x["cash"]) if helper else 0)
     with pytest.raises(tm.DefinitionError, match="source isn't available"):
-        m2.to_dict()
+        m.add_item("f", ("period",), formula=eval('lambda x: max(0, x["cash"])'))   # no source file
+    m.add_item("f", ("period",), formula='lambda x: max(0, x["cash"])')           # its text works
+    assert m.get("f", period="FY2026") == 40_000
 
 
 def _actuals_and_forecast():
@@ -947,8 +949,8 @@ def _actuals_and_forecast():
 def test_check_coords_filter_by_attrs():
     m = _actuals_and_forecast()
     FORECAST = tm.filter_by_attrs(kind="forecast")
-    m.add_check("FC-POS", coords={"period": FORECAST}, expect=m["revenue"] > 0)
-    m.add_check("NOTES", coords={"period": tm.filter_by_attrs(kind="actual")}, expect=m["notes"] >= 0)
+    m.add_check("FC-POS", coords={"period": FORECAST}, expect=lambda x: x["revenue"] > 0)
+    m.add_check("NOTES", coords={"period": tm.filter_by_attrs(kind="actual")}, expect=lambda x: x["notes"] >= 0)
     assert [r["period"] for r in m.checks["FC-POS"].runs()] == ["FY2026"]
     assert "per period (kind=forecast)" in repr(m)
     m.add_coords("period", [("FY2027", None, {"kind": "forecast"}), ("FY2028", None, {"kind": "plan"})])
@@ -960,8 +962,8 @@ def test_check_coords_filter_by_attrs():
 
 def test_report_filter():
     m = _actuals_and_forecast()
-    m.add_check("POS", coords={"period": tm.ANY}, expect=m["revenue"] > 0)
-    m.add_check("NOTES", coords={"period": tm.ANY}, expect=m["notes"] >= 0)    # missing in every year
+    m.add_check("POS", coords={"period": tm.ANY}, expect=lambda x: x["revenue"] > 0)
+    m.add_check("NOTES", coords={"period": tm.ANY}, expect=lambda x: x["notes"] >= 0)    # missing in every year
     report = m.check()
     assert not report.ok
     forecast = report.filter(check="POS", period=tm.filter_by_attrs(kind="forecast"))
@@ -974,7 +976,7 @@ def test_report_filter():
 
 def test_filter_by_attrs_saves_and_loads(tmp_path):
     m = _actuals_and_forecast()
-    m.add_check("FC-POS", coords={"period": tm.filter_by_attrs(kind="forecast")}, expect=m["revenue"] > 0)
+    m.add_check("FC-POS", coords={"period": tm.filter_by_attrs(kind="forecast")}, expect=lambda x: x["revenue"] > 0)
     m.save(tmp_path / "m.json")
     assert '"coords": {"period": {"filter_by_attrs": {"kind": "forecast"}}}' in (tmp_path / "m.json").read_text()
     loaded = tm.load(tmp_path / "m.json")
@@ -991,14 +993,12 @@ def test_x_attrs_lets_one_item_formula_cover_forecast_lines():
     for p, s_, c in [("FY2025", 365, 200), ("FY2026", 730, 400)]:
         m.set_value("sales", {"period": p}, s_, SO)
         m.set_value("cogs", {"period": p}, c, SO)
-    lines = {
-        "/current/receivables": lambda x: x["sales"] * 30 / 365,
-        "/current/inventory": lambda x: x["cogs"] * 73 / 365,
-        "/current": lambda x: x["/current/receivables"] + x["/current/inventory"],
-    }
     m.add_item("bs", ("bs_line", "period"),
-               formula=lambda x: lines[x.coords["bs_line"]](x)
-               if x.attrs("period")["kind"] == "forecast" and x.coords["bs_line"] in lines else None)
+               formula=lambda x: None if x.attrs("period")["kind"] != "forecast"
+               else x["sales"] * 30 / 365 if x.coords["bs_line"] == "/current/receivables"
+               else x["cogs"] * 73 / 365 if x.coords["bs_line"] == "/current/inventory"
+               else x["/current/receivables"] + x["/current/inventory"] if x.coords["bs_line"] == "/current"
+               else None)
     m.set_value("bs", {"bs_line": "/current/receivables", "period": "FY2025"}, 31, SO)
     t = {row[0]: row[1:] for row in m.table("bs").rows}
     assert t["/current/receivables"] == [31, 60]                 # entered actual; forecast calculated
@@ -1017,20 +1017,20 @@ def test_int_item_formula_results_must_be_whole():
     m.add_item("price", ("period",))
     m.set_value("buyback", {"period": "FY2026"}, 10_000.0, SO)
     m.set_value("price", {"period": "FY2026"}, 3.0, SO)
-    m.add_item("shares", ("period",), dtype=int, formula=m["buyback"] / m["price"])
+    m.add_item("shares", ("period",), dtype=int, formula=lambda x: x["buyback"] / x["price"])
     with pytest.raises(tm.DefinitionError, match=r"shares\[period=FY2026\] is int, .* gave 3333.33"):
         m.get("shares", period="FY2026")
     m2 = tm.Model()
     m2.add_dimension("period", ["FY2026"])
     m2.add_item("a", ("period",))
     m2.set_value("a", {"period": "FY2026"}, 0.1, SO)
-    m2.add_item("tenths", ("period",), dtype=int, formula=(m2["a"] * 3 + 0.7) * 10)   # 9.999999999999998
+    m2.add_item("tenths", ("period",), dtype=int, formula=lambda x: (x["a"] * 3 + 0.7) * 10)   # 9.999999999999998
     assert m2.get("tenths", period="FY2026") == 10 and isinstance(m2.get("tenths", period="FY2026"), int)
     m2.add_item("rounded", ("period",), dtype=int, formula=lambda x: round(x["a"] * 12_345))
     assert m2.get("rounded", period="FY2026") == 1_234
 
 
-# == value checks: expect=lambda x: ... ======================================
+# == checks with plain Python: expect=lambda x: ... ===========================
 
 def _margins():
     m = tm.Model()
@@ -1046,16 +1046,14 @@ def _margins():
 def test_value_check_pass_and_fail_with_plain_python():
     m = _margins()
     m.add_check("MARGIN", coords={"period": ["FY2024", "FY2025"]}, expect=lambda x: 0 <= x["margin"] <= 1)
-    check = m.checks["MARGIN"]
-    assert not isinstance(check.expect, Condition)               # chained comparison: kept as code
     by_period = {r.at["period"]: r for r in m.check().results}
     assert by_period["FY2024"].passed and not by_period["FY2025"].passed
     r = by_period["FY2025"]
-    assert (r.lhs, r.rhs, r.diff) == (None, None, None)
+    assert (r.lhs, r.rhs, r.diff) == (None, None, None)          # a chained comparison has no two sides
     assert [(c.item, c.coords, c.value) for c in r.cells] == [("margin", {"period": "FY2025"}, 1.2)]
     explained = m.check().explain("MARGIN")
-    assert 'lambda x: 0 <= x["margin"] <= 1' in explained and "margin[period=FY2025] = 1.2" in explained
-    assert 'lambda x: 0 <= x["margin"] <= 1' in repr(m)
+    assert "0 <= x['margin'] <= 1" in explained and "margin[period=FY2025] = 1.2" in explained
+    assert "0 <= x['margin'] <= 1" in repr(m)
 
 
 def test_value_check_and_or_max_if_else_and_coords():
@@ -1071,10 +1069,10 @@ def test_value_check_and_or_max_if_else_and_coords():
     assert [r.passed for r in report.filter(check="BRANCH").results] == [True, False, True]
 
 
-def test_value_check_in_the_expression_grammar_stays_an_expression():
+def test_a_single_comparison_reports_left_and_right():
     m = _margins()
     m.add_check("POS", coords={"period": ["FY2024"]}, expect=lambda x: x["margin"] >= 0)
-    assert isinstance(m.checks["POS"].expect, Condition)        # keeps left, right and diff
+    assert m.checks["POS"].expect.rule == ">="
     r = m.check().results[0]
     assert r.passed and (r.lhs, r.rhs) == (0.46, 0)
 
@@ -1091,20 +1089,22 @@ def test_value_check_non_bool_or_exception_fails_with_the_error():
     m = _margins()
     m.add_check("NUM", coords={"period": ["FY2024"]}, expect=lambda x: x["margin"] * 2 if x.coords else 0)
     m.add_check("BOOM", coords={"period": ["FY2024"]}, expect=lambda x: x["margin"] / 0 > 1 or x.coords)
-    m.add_check("TYPO", coords={"period": ["FY2024"]}, expect=lambda x: x["margn"] > 0 or x.coords)
     by_id = {r.check.id: r for r in m.check().results}
     assert not by_id["NUM"].passed and "must return True or False" in by_id["NUM"].error
     assert not by_id["BOOM"].passed and by_id["BOOM"].error.startswith("ZeroDivisionError")
-    assert not by_id["TYPO"].passed and "no item 'margn'" in by_id["TYPO"].error
     assert "error: ZeroDivisionError" in m.check().explain("BOOM")
+    with pytest.raises(tm.UnknownItem, match="no item 'margn'"):              # a typo is caught when added
+        m.add_check("TYPO", coords={"period": ["FY2024"]}, expect=lambda x: x["margn"] > 0 or x.coords)
 
 
-def test_value_check_rejects_a_dim_named_x():
+def test_a_dim_named_x_is_fine():
     m = tm.Model()
     m.add_dimension("x", ["a", "b"])
     m.add_item("v", ("x",))
-    with pytest.raises(tm.DefinitionError, match="x is also a dim in coords"):
-        m.add_check("X", coords={"x": tm.ANY}, expect=lambda x: m["v"][x] >= 0)
+    m.add_check("X", coords={"x": tm.ANY}, expect=lambda x: x["v"] >= 0)
+    m.set_value("v", {"x": "a"}, 1, SO)
+    m.set_value("v", {"x": "b"}, -1, SO)
+    assert [r.passed for r in m.check().results] == [True, False]
 
 
 def test_value_check_follows_add_coords_and_filter_by_attrs():
@@ -1126,21 +1126,19 @@ def test_value_check_warning_severity():
     assert "warn" in str(report)
 
 
-def test_value_check_save_and_load_needs_allow_code(tmp_path):
+def test_check_save_and_load(tmp_path):
     m = _margins()
     LIMIT = 1
     m.add_check("MARGIN", coords={"period": tm.ANY}, expect=lambda x: 0 <= x["margin"] <= LIMIT)
     m.save(tmp_path / "m.json")
     data = json.loads((tmp_path / "m.json").read_text())
-    saved = data["checks"][0]["expect"]
-    assert saved == {"python": 'lambda x: 0 <= x["margin"] <= LIMIT', "env": {"LIMIT": 1}}
-    with pytest.raises(tm.DefinitionError, match="allow_code=True"):
-        tm.load(tmp_path / "m.json")
-    loaded = tm.load(tmp_path / "m.json", allow_code=True)
+    saved = data["checks"][0]
+    assert (saved["expect"], saved["env"]) == ("lambda x: 0 <= x['margin'] <= LIMIT", {"LIMIT": 1})
+    loaded = tm.load(tmp_path / "m.json")
     for p, v in [("FY2024", 0.46), ("FY2025", 1.2), ("FY2026", 0.3)]:
         loaded.set_value("margin", {"period": p}, v, SO)
     assert [r.passed for r in loaded.check().results] == [True, False, True]
-    loaded.add_coords("period", [("FY2027", None, {"kind": "forecast"})])   # re-expands without the code
+    loaded.add_coords("period", [("FY2027", None, {"kind": "forecast"})])   # re-expands
     assert len(loaded.checks["MARGIN"].runs()) == 4
 
 
@@ -1157,13 +1155,13 @@ def _quarters():
 
 def test_check_run_that_cant_be_calculated_fails_instead_of_raising():
     m = _quarters()
-    m.add_item("growth", ["period"], formula=m["rev"] / m["rev"].lag("period") - 1)
-    m.add_item("thirds", ["period"], dtype=int, formula=m["rev"] / 3)
-    m.add_check("G", coords={"period": tm.ANY}, expect=m["growth"] < 1)
-    m.add_check("T", coords={"period": ["Q2"]}, expect=m["thirds"] > 0)
+    m.add_item("growth", ["period"], formula=lambda x: x["rev"] / x["rev"].lag("period") - 1)
+    m.add_item("thirds", ["period"], dtype=int, formula=lambda x: x["rev"] / 3)
+    m.add_check("G", coords={"period": tm.ANY}, expect=lambda x: x["growth"] < 1)
+    m.add_check("T", coords={"period": ["Q2"]}, expect=lambda x: x["thirds"] > 0)
     report = m.check()
     assert [r.passed for r in report.filter(check="G").results] == [False, True, True]
-    assert "OutOfRange" in report.filter(check="G").results[0].error
+    assert [c.item for c in report.filter(check="G").results[0].missing] == ["growth"]  # Q1 has no Q0
     assert "DefinitionError" in report.filter(check="T").results[0].error
 
 
@@ -1188,23 +1186,24 @@ def test_value_check_branching_on_a_cell_runs_with_numbers():
     assert [r.passed for r in m.check().results] == [True, True, True]   # Q1 is 0: no test
 
 
-def test_readding_an_item_with_an_edited_def_formula_raises():
+def test_readding_an_item_with_an_edited_formula_raises():
     m = _quarters()
-
-    def f(x):
-        return max(x["rev"], 0)
+    f = lambda x: max(x["rev"], 0)
     m.add_item("d", ["period"], formula=f)
-    m.add_item("d", ["period"], formula=f)   # the same function again is fine
-
-    def f(x):
-        return max(x["rev"], 0) * 100
+    m.add_item("d", ["period"], formula=f)                                   # the same again is fine
+    m.add_item("d", ["period"], formula="lambda x: max(x['rev'], 0)")         # the same text too
     with pytest.raises(tm.DefinitionError, match="different formula"):
-        m.add_item("d", ["period"], formula=f)
+        m.add_item("d", ["period"], formula=lambda x: max(x["rev"], 0) * 100)
+
+    def g(x):
+        return x["rev"]
+    with pytest.raises(tm.DefinitionError, match="a formula is one lambda"):
+        m.add_item("e", ["period"], formula=g)
 
 
 def test_saved_formula_that_doesnt_parse_raises_at_load():
     m = _quarters()
-    m.add_item("double", ["period"], formula=m["rev"] * 2)
+    m.add_item("double", ["period"], formula=lambda x: x["rev"] * 2)
     data = m.to_dict()
     next(i for i in data["items"] if i["name"] == "double")["formula"] = "rev ** 2"
     with pytest.raises(tm.DefinitionError):
@@ -1216,21 +1215,17 @@ def test_function_formula_default_values_save_and_load(tmp_path):
     for k in [2]:
         m.add_item("scaled", ["period"], formula=lambda x, k=k: max(x["rev"], 0) * k)
     m.save(tmp_path / "m.json")
-    loaded = tm.load(tmp_path / "m.json", allow_code=True)
+    loaded = tm.load(tmp_path / "m.json")
     loaded.set_value("rev", {"period": "Q1"}, 5, SO)
     assert loaded.get("scaled", period="Q1") == 10
 
 
-def test_to_jsonl_leaves_the_file_alone_when_a_row_cant_be_saved(tmp_path):
+def test_a_cell_formula_without_source_is_refused_and_changes_nothing():
     m = _quarters()
-    path = tmp_path / "v.jsonl"
-    m.to_jsonl(path)
-    before = path.read_text()
     code = "m.set_value('rev', {'period': 'Q1'}, lambda x: max(x.lag('period'), 0), SO)"
-    exec(code, {"m": m, "SO": SO})  # noqa: S102 - built with exec, it has no source text to save
-    with pytest.raises(tm.DefinitionError, match="source"):
-        m.to_jsonl(path)
-    assert path.read_text() == before
+    with pytest.raises(tm.DefinitionError, match="source isn't available"):
+        exec(code, {"m": m, "SO": SO})  # noqa: S102 - built with exec, it has no source text
+    assert m.get("rev", period="Q1") == 100
 
 
 def test_item_names_must_be_identifiers():
@@ -1239,25 +1234,16 @@ def test_item_names_must_be_identifiers():
         m.add_item("net sales", ["period"])
 
 
-def test_saved_function_formula_restores_modules_the_model_and_expressions(tmp_path):
-    import math
-
+def test_formulas_use_math_but_not_the_model_or_its_cells():
     m = _quarters()
     model, base = m, m["rev"]
     m.add_item("logged", ["period"], formula=lambda x: math.log(max(x["rev"], 1)))
-    m.add_item("via_model", ["period"], formula=lambda x: max(model.get("rev", **x.coords), 0))
-    m.add_item("via_expr", ["period"], formula=lambda x: max(x[base.item.name], 0) + 1)
-    m.save(tmp_path / "m.json")
-    env = {i["name"]: i["formula"]["env"] for i in json.loads((tmp_path / "m.json").read_text())["items"]
-           if isinstance(i.get("formula"), dict)}
-    assert env["logged"] == {"math": {"$module": "math"}}
-    assert env["via_model"] == {"model": {"$model": True}}
-    assert env["via_expr"] == {"base": {"$expr": "rev"}}
-    loaded = tm.load(tmp_path / "m.json", allow_code=True)
-    loaded.set_value("rev", {"period": "Q2"}, 110, SO)
-    assert loaded.get("logged", period="Q2") == pytest.approx(math.log(110))
-    assert loaded.get("via_model", period="Q2") == 110
-    assert loaded.get("via_expr", period="Q2") == 111
+    assert m.items["logged"].formula.env == {}                     # math is built in
+    with pytest.raises(tm.DefinitionError, match="read cells through x"):
+        m.add_item("via_model", ["period"], formula=lambda x: max(model.get("rev", **x.coords), 0))
+    with pytest.raises(tm.DefinitionError, match="read cells through x"):
+        m.add_item("via_cell", ["period"], formula=lambda x: max(x[base.item.name], 0) + 1)
+    assert m.get("logged", period="Q2") == pytest.approx(math.log(110))
 
 
 def test_two_function_formulas_on_one_line_each_save_their_own_source(tmp_path):
@@ -1266,6 +1252,6 @@ def test_two_function_formulas_on_one_line_each_save_their_own_source(tmp_path):
     m.add_item("up", ["period"], formula=up)
     m.add_item("down", ["period"], formula=down)
     m.save(tmp_path / "m.json")
-    loaded = tm.load(tmp_path / "m.json", allow_code=True)
+    loaded = tm.load(tmp_path / "m.json")
     loaded.set_value("rev", {"period": "Q1"}, 100, SO)
     assert [loaded.get("up", period="Q1"), loaded.get("down", period="Q1")] == [101, 99]
