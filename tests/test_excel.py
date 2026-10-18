@@ -147,3 +147,32 @@ def test_needs_openpyxl(m, tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "openpyxl", None)
     with pytest.raises(ImportError, match=r"pytracemodel\[excel\]"):
         m.to_excel(tmp_path / "m.xlsx")
+
+
+def test_a_third_dim_nests_in_the_first_column(tmp_path):
+    """contract × version × month: month across; each version a group of rows, its contract tree
+    beneath it in the same column, as a pivot table's compact form."""
+    m = tm.Model()
+    m.add_dimension("month", tm.period_range("2026-01", periods=2, freq="M"))
+    m.add_dimension("contract", tm.Hierarchy([("/", "Project"), ("/hard", "Hard costs"),
+                                              ("/hard/C-101", "Earthworks"), ("/soft", "Soft costs"),
+                                              ("/soft/C-201", "Owner's rep")]))
+    m.add_dimension("version", [("plan", "Plan"), ("actual", "Actual"), ("forecast", "Forecast")])
+    m.add_item("cost", ("contract", "version", "month"))
+    for c in ["/hard/C-101", "/soft/C-201"]:
+        for v, x in [("plan", 10), ("actual", 12)]:  # nothing in forecast: the group is left out
+            for mo in ["2026-01", "2026-02"]:
+                m.set_value("cost", {"contract": c, "version": v, "month": mo}, x, SRC)
+    m.to_excel(tmp_path / "m.xlsx")
+    ws = openpyxl.load_workbook(tmp_path / "m.xlsx")["Cost"]
+    assert [c.value for c in ws[4]] == ["version / contract", "units", "2026-01", "2026-02"]
+    body = [r for r in ws.iter_rows(min_row=5) if r[0].value]
+    assert [(r[0].value, r[0].alignment.indent) for r in body] == [
+        ("Plan", 0), ("Project", 1), ("Hard costs", 2), ("Earthworks", 3), ("Soft costs", 2), ("Owner's rep", 3),
+        ("Actual", 0), ("Project", 1), ("Hard costs", 2), ("Earthworks", 3), ("Soft costs", 2), ("Owner's rep", 3),
+    ]
+    plan, earthworks, actual_rep = body[0], body[3], body[11]
+    assert plan[0].font.bold and plan[2].value is None  # a group's row: its label only
+    assert earthworks[2].value == 10 and actual_rep[3].value == 12
+    assert ws.row_dimensions[earthworks[0].row].outline_level == 3
+    assert ws.row_dimensions[plan[0].row].outline_level == 0
