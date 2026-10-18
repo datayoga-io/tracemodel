@@ -5,7 +5,8 @@ as a finance team reads them; then the model as tables: Dimensions, Items, Check
 results and Values (every entered value with its source).
 
 In a grid, items are blocks one under the other, sharing the columns (the period, or another
-dim); each block has its own rows, its other dims, with hierarchies indented and grouped.
+dim); each block has its own rows, its other dims nested in the first column (a hierarchy
+innermost, its tree under each label of the others), indented and grouped.
 `sections` names groups of items, e.g. a statement each; with layout="sheet" they all go on
 one sheet, one after the other, each under a banner and on its own printed page.
 
@@ -190,8 +191,8 @@ class _Writer:
         xl, model = self.xl, self.model
         col_labels = model.dimensions[across].coords if across else ("value",)
         stacked, sectioned = len(items) > 1, len(sections) > 1
-        downs = {i.name: [d for d in i.dims if d != across] for i in items}
-        n_labels = max(1, *(len(d) for d in downs.values()))
+        downs = {i.name: _nesting(model, [d for d in i.dims if d != across]) for i in items}
+        n_labels = 1  # the dims down share the first column, nested (a pivot table's compact form)
         units_col = n_labels + 1
         first = units_col + 1
         ws.sheet_view.showGridLines = False
@@ -203,8 +204,7 @@ class _Writer:
         r = header_row = 4
         same = [downs[i.name] for i in items]
         same_dims = all(d == same[0] for d in same)
-        for i in range(n_labels):
-            self._head(ws.cell(r, 1 + i, same[0][i] if same_dims and i < len(same[0]) else ""))
+        self._head(ws.cell(r, 1, " / ".join(same[0]) if same_dims else ""))
         self._head(ws.cell(r, units_col, "units"))
         for j, label in enumerate(col_labels):
             c = ws.cell(r, first + j, label)
@@ -255,43 +255,59 @@ class _Writer:
                         ws.row_dimensions[r].outline_level = base
                     r += 1  # a blank row between blocks
         ws.sheet_properties.outlinePr.summaryBelow = False  # parents sit above their children
-        widths = {i: (58 if n_labels == 1 else 34) for i in range(1, n_labels + 1)}
+        widths = {1: 58}
         widths[units_col] = 18
         widths |= {first + j: 14 for j in range(len(col_labels))}
         self._widths(ws, widths)
 
     def _rows(self, ws, r, item, down, across, col_labels, values, fmt, indent, units_col) -> int:
-        """An item's rows: one per combination of its other dims; a pivot's look."""
+        """An item's rows, its dims down nested in the first column: each label of an outer dim is
+        a group's row, with the next dim's rows beneath it; the last dim's rows hold the values.
+        A group with no values is left out (a grid of several dims is sparse)."""
         model, xl = self.model, self.xl
-        keys = list(itertools.product(*(model.dimensions[d].coords for d in down))) or [()]
-        many = len(down) > 1
-        shown: tuple = ()
-        for key in keys:
-            at = dict(zip(down, key))
-            if many and all(_state(model, item, at | ({across: lb} if across else {}))[0] is None
-                            for lb in col_labels):
-                continue  # a grid of several dims is sparse: show the rows that have values
-            same = 0  # leading labels equal to the row above: shown once, as in a pivot table
-            while many and same < len(key) - 1 and same < len(shown) and key[same] == shown[same]:
-                same += 1
-            shown = key
-            bold, depth0 = False, 0
-            for n, (d, label) in enumerate(zip(down, key)):
-                dim = model.dimensions[d]
-                depth = _depth(dim, label)
-                c = ws.cell(r, 1 + n, "" if n < same else dim.description(label) or label)
-                c.alignment = xl.Alignment(horizontal="left", indent=depth + indent)
-                if dim.hierarchy and dim.hierarchy.children(label):
-                    c.font, bold = self.BOLD, True
-                if n == 0:
-                    depth0 = depth
+        if not down:  # an item with only the dim across: one row of values
             if not indent:
                 ws.cell(r, units_col, item.unit_label).font = self.GREY
-            values(r, item, fmt, at, bold)
-            if depth0 + indent:
-                ws.row_dimensions[r].outline_level = min(depth0 + indent, 7)
-            r += 1
-        return r
+            values(r, item, fmt, {}, False)
+            return r + 1
+        *outer, inner = down
+
+        def label_row(r, d, label, level):
+            dim = model.dimensions[d]
+            depth = _depth(dim, label) + level + indent
+            c = ws.cell(r, 1, dim.description(label) or label)
+            c.alignment = xl.Alignment(horizontal="left", indent=depth)
+            parent = level < len(outer) or bool(dim.hierarchy and dim.hierarchy.children(label))
+            if parent:
+                c.font = self.BOLD
+            if depth:
+                ws.row_dimensions[r].outline_level = min(depth, 7)
+            return parent
+
+        def has_values(at, rest):
+            cols = col_labels if across else (None,)
+            return any(_state(model, item, at | dict(zip(rest, key)) | ({across: lb} if across else {}))[0]
+                       is not None for key in itertools.product(*(model.dimensions[d].coords for d in rest))
+                       for lb in cols)
+
+        def nest(r, at, level):
+            if level == len(outer):
+                for label in model.dimensions[inner].coords:
+                    bold = label_row(r, inner, label, level)
+                    if not indent:
+                        ws.cell(r, units_col, item.unit_label).font = self.GREY
+                    values(r, item, fmt, at | {inner: label}, bold)
+                    r += 1
+                return r
+            d = outer[level]
+            for label in model.dimensions[d].coords:
+                sub = at | {d: label}
+                if has_values(sub, down[level + 1:]):
+                    label_row(r, d, label, level)
+                    r = nest(r + 1, sub, level + 1)
+            return r
+
+        return nest(r, {}, 0)
 
     def items_across(self, ws, name, items) -> None:
         """Items that share only hierarchy dims: the items across (the item name as a dim)."""
@@ -558,6 +574,13 @@ def _title(item: Item) -> str:
 def _source(s: Mapping[str, Any]) -> str:
     text = ", ".join(str(s[k]) for k in ("document", "section") if s.get(k))
     return text + (f", p. {s['page']}" if s.get("page") else "")
+
+
+def _nesting(model: Model, down: list[str]) -> list[str]:
+    """The dims down, outermost first: a hierarchy reads as the rows themselves, so it goes
+    innermost and its tree stays whole under each label of the others."""
+    tree = next((d for d in down if model.dimensions[d].hierarchy), None)
+    return [d for d in down if d != tree] + [tree] if tree else down
 
 
 def _depth(dim, label) -> int:

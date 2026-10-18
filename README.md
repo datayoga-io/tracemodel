@@ -731,9 +731,12 @@ model.to_excel("apple.xlsx", title="Apple FY2024-FY2025 (Form 10-K)", sections={
 
 - **Grids.** Items are blocks one under the other, sharing the columns: `columns`, else
   `period`, else each item's last dim that isn't a hierarchy. A block's title is the item's
-  `description` (else its name in words); its rows are its other dims, hierarchies indented
-  and grouped so they collapse. Items with only hierarchy dims go across instead, one column
-  each.
+  `description` (else its name in words); its rows are its other dims, in the first column,
+  hierarchies indented and grouped so they collapse. With more than one dim down, they nest
+  there as a pivot table's compact form: each label of the other dims is a group row, with the
+  hierarchy's tree beneath it (`version / contract`: Plan, then the contracts, then Actual, ...);
+  a group with no values is left out. Items with only hierarchy dims go across instead, one
+  column each.
 - **Sections** group items, e.g. a statement each; items in no section group by their dims.
   With `layout="sheet"` the sections that share the columns go on one sheet, one after the
   other, each under a banner and, with `page_breaks`, on its own printed page; with
