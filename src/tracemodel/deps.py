@@ -192,7 +192,7 @@ class _Walk:
                     if attr in _LABEL_ATTRS:
                         time_dims = [d for d in self.at or () if self.model.dimensions[d].time is not None]
                         return getattr(self.bound(target, None if attr == "coords" else time_dims), attr)
-                    if attr == "dt":
+                    if attr in ("dt", "str"):
                         return self.use(target)
                     raise self.fail(node, f"a formula can't use .{attr} on a cell")
                 target = self.use(target)

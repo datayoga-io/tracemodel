@@ -95,6 +95,14 @@ class Bound(CellValue):
             raise DefinitionError(f"{self._cell!r}.dt: .dt is for date and datetime items; it is a {dates.kind(value)}")
         return dates.DatetimeAccessor(value)
 
+    @property
+    def str(self) -> StringAccessor:
+        """Text methods of a str cell, as pandas' Series.str: x["vendor"].str.lower(), .str.contains("Ltd")."""
+        value = self._get()
+        if not isinstance(value, str):
+            raise DefinitionError(f"{self._cell!r}.str: .str is for str items; it is a {dates.kind(value)}")
+        return StringAccessor(value)
+
     # reading other cells
     def __getitem__(self, key: str) -> Bound:
         model = self._model
@@ -272,23 +280,60 @@ def _the_period(model: Model, at: Mapping[str, str]) -> Period:
 
 
 _BOUND_ATTRS = {"attrs", "children", "coords", "dt", "is_nil", "labels", "lag", "lead", "parent", "period",
-                "periods", "sel", "shift"}
+                "periods", "sel", "shift", "str"}
 allow_attrs(Bound, _BOUND_ATTRS)
 
 
+class StringAccessor:
+    """`.str` on a text cell, named as pandas' Series.str. `contains` finds plain text, not a
+    regular expression (pandas' regex=False)."""
+
+    __slots__ = ("_v",)
+
+    def __init__(self, value: str):
+        self._v = value
+
+    def contains(self, text: str, case: bool = True) -> bool:
+        return text in self._v if case else text.lower() in self._v.lower()
+
+    def startswith(self, text: str) -> bool:
+        return self._v.startswith(text)
+
+    def endswith(self, text: str) -> bool:
+        return self._v.endswith(text)
+
+    def len(self) -> int:
+        return len(self._v)
+
+    def lower(self) -> str:
+        return self._v.lower()
+
+    def upper(self) -> str:
+        return self._v.upper()
+
+    def strip(self) -> str:
+        return self._v.strip()
+
+    def replace(self, old: str, new: str) -> str:
+        return self._v.replace(old, new)
+
+
+allow_attrs(StringAccessor, {"contains", "endswith", "len", "lower", "replace", "startswith", "strip", "upper"})
+
+
 def run(formula: Formula, model: Model, item: Item, full: Mapping[str, str], reads: list) -> Any:
-    """A formula's value for one cell: a number, a date, tm.NIL or None (missing)."""
+    """A formula's value for one cell: a number, text, a date, tm.NIL or None (missing)."""
     result = formula.call(Bound(model, model[item.name], full, reads))
     if isinstance(result, Bound):
         return result._get()
-    if result is None or isinstance(result, (int, float, date, timedelta)) and not isinstance(result, bool):
+    if result is None or isinstance(result, (int, float, str, date, timedelta)) and not isinstance(result, bool):
         return result  # the model checks it against the item's dtype
     from .values import NIL
 
     if result is NIL:
         return result
     raise DefinitionError(f"formula {formula!r} returned {result!r} for {item.name} {dict(full)}; "
-                          "it must return a number, or a date for a date item")
+                          "it must return a number, text for a str item, or a date for a date item")
 
 
 def run_check(formula: Formula, model: Model, at: Mapping[str, str], reads: list) -> Any:
