@@ -45,7 +45,8 @@ from .values import (
     _Nil,
 )
 
-DTYPES = {"int": int, "float": float, **dates.DTYPE_NAMES}
+DTYPES = {"int": int, "float": float, "str": str, "string": str, **dates.DTYPE_NAMES}
+_NOT_NUMBERS = (*dates.TEMPORAL, str)  # nil is not 0 for these: there is no date 0 or empty text
 SEVERITIES = ("error", "warning")
 
 
@@ -370,7 +371,7 @@ class Model:
         formula: Formula | Callable[..., Any] | str | None = None,
         description: str | None = None,
     ) -> Item:
-        """Declare a line item: its dims, data type (int, float, date or datetime), attrs
+        """Declare a line item: its dims, data type (int, float, str, date or datetime), attrs
         (units, scale, ...) and a description, the item's title as people read it
         ("Lease-related assets and liabilities"), as a dimension's labels have.
 
@@ -391,8 +392,8 @@ class Model:
                 )
         if isinstance(dtype, str):
             dtype = DTYPES.get(dtype) or dates.dtype_from_name(dtype)  # type: ignore[assignment]
-        if not any(dtype is t for t in (int, float, date, datetime)):
-            raise DefinitionError(f"item {name!r}: dtype must be int, float, date or datetime, got {dtype!r}")
+        if not any(dtype is t for t in (int, float, str, date, datetime)):
+            raise DefinitionError(f"item {name!r}: dtype must be int, float, str, date or datetime, got {dtype!r}")
         if attrs is not None and not isinstance(attrs, Mapping):
             raise DefinitionError(f"item {name!r}: attrs must be a dict")
         if description is not None and not isinstance(description, str):
@@ -754,7 +755,7 @@ class Model:
         key, full = self._key(line_item, coords)
         item = self.items[line_item]
         if (callable(value) or isinstance(value, (FormulaBase, Cell))
-                or isinstance(value, str) and value.lstrip().startswith("lambda")):
+                or isinstance(value, str) and item.dtype is not str and value.lstrip().startswith("lambda")):
             value = self._as_formula(value, f"{line_item}{_fmt(full)}: formula")
         if item.dtype in dates.TEMPORAL and value is not NIL and not _is_formula(value):
             value = dates.coerce(item.dtype, value, f"{line_item}{_fmt(full)}")
@@ -794,7 +795,7 @@ class Model:
             value = self._value(Cell(self, item, full), {})
             if value is None:
                 raise MissingValue(f"{line_item}{_fmt(full)}: its formula {formula!r} reads a cell with no value")
-        return 0 if value is NIL and item.dtype not in dates.TEMPORAL else value
+        return 0 if value is NIL and item.dtype not in _NOT_NUMBERS else value
 
     def entry(self, line_item: str, **coords: str) -> Entry | Table:
         """One entry when coords are complete; otherwise a table of the matching entries."""
@@ -1166,9 +1167,10 @@ class Model:
         if value is None:
             raise Missing
         if value is NIL:
-            if cell.item.dtype in dates.TEMPORAL:  # nil counts as 0, but there is no date 0
+            if cell.item.dtype in _NOT_NUMBERS:  # nil counts as 0, but there is no date 0 or empty text
+                what = "text" if cell.item.dtype is str else "date"
                 raise DefinitionError(
-                    f"{cell!r}{_fmt(cell.resolve(at))} is nil: it has no date to compute with; "
+                    f"{cell!r}{_fmt(cell.resolve(at))} is nil: it has no {what} to compute with; "
                     f"test {cell!r}.is_nil() first"
                 )
             return 0
@@ -1191,6 +1193,11 @@ class Model:
     def _validate(item: Item, value: object, source: object) -> None:
         if value is NIL or _is_formula(value) or item.dtype in dates.TEMPORAL:  # dates: set_value coerced it
             pass
+        elif item.dtype is str:
+            if not isinstance(value, str):
+                raise InvalidValue(f"{item.name} is str: value must be text, got {value!r}")
+            if not value.strip():
+                raise InvalidValue(f"{item.name}: empty text; when the source shows nothing, enter tm.NIL")
         elif isinstance(value, bool) or not isinstance(value, (int, float)):
             raise InvalidValue(f"{item.name}: value must be a number, got {value!r}")
         elif item.dtype is int and not isinstance(value, int):
@@ -1234,7 +1241,7 @@ def _typed(value: Any, item: Item, formula: object, full: Mapping[str, str]) -> 
     if item.dtype is int and isinstance(value, float):
         return _whole(value, item, formula, full)
     if (item.dtype in (int, float) and kind == "number") or (item.dtype is date and kind == "date") \
-            or (item.dtype is datetime and kind == "datetime"):
+            or (item.dtype is datetime and kind == "datetime") or (item.dtype is str and kind == "str"):
         return value
     if item.dtype is datetime and kind == "date":
         return datetime(value.year, value.month, value.day)

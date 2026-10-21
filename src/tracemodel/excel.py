@@ -358,6 +358,7 @@ class _Writer:
                 c.fill = self.OVERRIDE
             c.number_format = ("yyyy-mm-dd hh:mm" if isinstance(value, datetime)
                                else "yyyy-mm-dd" if isinstance(value, date) else fmt)
+            _as_text(c)
         if note:
             c.comment = xl.Comment(note, "tracemodel", width=320, height=90)
         if key in self.flagged:
@@ -483,6 +484,8 @@ class _Writer:
         ws.append(header)
         for row in rows:
             ws.append([_plain(v) for v in row])
+            for c in ws[ws.max_row]:
+                _as_text(c)
         if rows:  # an Excel table needs a data row
             t = xl.Table(displayName=name, ref=f"A1:{xl.get_column_letter(len(header))}{len(rows) + 1}")
             t.tableStyleInfo = xl.TableStyleInfo(name="TableStyleLight9", showRowStripes=True)
@@ -549,6 +552,8 @@ def _flagged(model: Model, report: Report) -> set:
 def _number_format(model: Model, item: Item) -> str:
     """Whole numbers, negatives in parentheses; two decimals when the item has fractions."""
     whole = "#,##0;(#,##0)"
+    if item.dtype is str:
+        return "@"
     if item.dtype is not float:
         return whole
     for key in itertools.product(*(model.dimensions[d].coords for d in item.dims)):
@@ -597,6 +602,12 @@ def _plain(v: Any) -> Any:
     if v is None or isinstance(v, (int, float, str, date)):
         return v
     return "—" if v is NIL else str(v)
+
+
+def _as_text(c) -> None:
+    """Text stays text: openpyxl writes a string starting with "=" as an Excel formula."""
+    if isinstance(c.value, str) and c.data_type == "f":
+        c.data_type = "s"
 
 
 def _sheet_name(name: str, taken: set[str]) -> str:

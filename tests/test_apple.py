@@ -98,9 +98,9 @@ def test_item_needs_declared_dims():
         tm.Model().add_item("net_sales", dims=("period",))
 
 
-def test_item_dtype_must_be_int_or_float(empty):
-    with pytest.raises(tm.DefinitionError, match="dtype"):
-        empty.add_item("x", dims=("period",), dtype=str)
+def test_item_dtype_must_be_supported(empty):
+    with pytest.raises(tm.DefinitionError, match="dtype must be int, float, str, date or datetime"):
+        empty.add_item("x", dims=("period",), dtype=bool)
 
 
 def test_re_adding_same_item_is_a_no_op(empty):

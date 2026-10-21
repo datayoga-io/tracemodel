@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Text items:** `add_item(..., dtype=str)` (or `"str"` / `"string"`) holds sourced text, such
+  as a contract's status or vendor. Text compares and joins in formulas and checks, `.str` gives
+  pandas-named methods (`contains`, `lower`, `len`, ...), empty text is rejected in favour of
+  `tm.NIL`, and Excel writes it as text. Comparing text with a number now raises
+  `DefinitionError` instead of being `False` or a `TypeError`.
+- `to_excel` nests every dim down in the first column, as a pivot table's compact form.
+
 ## 0.2.0 — 2026-10-15
 
 One kind of formula. Every formula and check is a lambda of `x`, checked against an allow-list

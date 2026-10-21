@@ -80,7 +80,7 @@ _EXACT = {
 }
 OP_TEXT = {ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">=", ast.Eq: "==", ast.NotEq: "!=",
             ast.In: "in", ast.NotIn: "not in", ast.Is: "is", ast.IsNot: "is not"}
-_KINDS = {"number", "date", "datetime", "timedelta"}
+_KINDS = {"number", "date", "datetime", "timedelta", "str"}
 _NUMBERS = (int, float)
 
 

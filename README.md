@@ -146,7 +146,7 @@ model = tm.Model()
 | `add_dimension(name, coords)` | `coords` is a list of coord entries (see Coord entries), a `tm.Hierarchy`, or a time spine, `tm.period_range(...)` (see Time dimensions). Re-adding an identical dimension is a no-op; a different one under the same name raises `DefinitionError`. |
 | `add_coords(name, entries)` | Appends labels to a dimension, e.g. forecast periods (entries as in Coord entries; a hierarchy path needs its parent). Items get the new cells, not entered. Checks given `tm.ANY` or `tm.filter_by_attrs(...)` for that dimension are re-expanded to cover the new labels; checks with listed labels keep them. Labels already there with the same entry are a no-op. Labels can't be removed or reordered. A time dimension takes the periods that continue it: `add_coords("month", tm.period_range("2027-01", periods=12))`. |
 | `remove_dimension(name)` | Removes a dimension that no item uses; raises `DefinitionError` naming the items that do. |
-| `add_item(name, dims, dtype=float, attrs=None, formula=None, description=None)` | `dims`: tuple of declared dimension names. `dtype`: `int`, `float`, `date` or `datetime` (as types or names; see Dates). `attrs`: free-form dict; `units` and `scale` are shown in tables. By convention `period_type` is `"duration"` (a flow over the period) or `"instant"` (a balance at its end), for whoever reads the model; the library doesn't act on it. `formula`: a lambda of `x`, or its source text, that calculates the item's cells (see Formulas). `description`: the item's title as people read it, e.g. the caption the source prints ("Lease-related assets and liabilities"), as a dimension label has one; `name` stays the code formulas use. Re-adding an identical item is a no-op. |
+| `add_item(name, dims, dtype=float, attrs=None, formula=None, description=None)` | `dims`: tuple of declared dimension names. `dtype`: `int`, `float`, `str`, `date` or `datetime` (as types or names; see Text and Dates). `attrs`: free-form dict; `units` and `scale` are shown in tables. By convention `period_type` is `"duration"` (a flow over the period) or `"instant"` (a balance at its end), for whoever reads the model; the library doesn't act on it. `formula`: a lambda of `x`, or its source text, that calculates the item's cells (see Formulas). `description`: the item's title as people read it, e.g. the caption the source prints ("Lease-related assets and liabilities"), as a dimension label has one; `name` stays the code formulas use. Re-adding an identical item is a no-op. |
 | `add_check(id, expect, coords=None, description=None, severity="error")` | `expect`: a lambda of `x`, or its source text, that returns `True` or `False` (see Data quality). `coords`: `{dim: tm.ANY \| tm.filter_by_attrs(...) \| label \| [labels]}` — the check runs once per combination. Every dimension a cell it reads leaves open must appear here, and every dimension here must be left open by some cell (otherwise `DefinitionError`). When every cell fixes all its coords, omit `coords`: the check runs once. `severity`: `"error"` or `"warning"`; a failing warning is reported but doesn't make `report.ok` false. An existing `id` is replaced. |
 | `model[item]` | The item's cells, to show as a table; see Selecting and showing cells. |
 | `model.item(name)` | The declared `Item`; raises `UnknownItem`. |
@@ -166,7 +166,7 @@ model = tm.Model()
 
 | Call | Does |
 | --- | --- |
-| `set_value(line_item, coords, value, source)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers; date items take a date or an ISO string), or `tm.NIL` (see below), or a lambda (or its text, `"lambda x: ..."`): a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
+| `set_value(line_item, coords, value, source)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers; `str` items take text; date items take a date or an ISO string), or `tm.NIL` (see below), or a lambda (or its text, `"lambda x: ..."`, except on a `str` item, where text is the value): a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
 | `get(line_item, **coords)` | The value at full coords: a number, or a date for a date item (0 for a nil cell; `tm.NIL` for a nil date). |
 | `entry(line_item, **coords)` | With full coords: an `Entry` (`value`, `source`, `history`). With fewer coords: a `Table` of matching entries. |
 | `table(line_item)` | The item as a grid: `period` across (if the item has it), other dims down. Cells not entered are blank; nil cells show `—`. |
@@ -569,6 +569,34 @@ model.add_item("planned_cost", ("contract", "month"), formula=lambda x: sum(
   count as 0: test `is_nil()` before computing with it, or the calculation raises.
 - Tables show ISO dates and timedeltas in days (`18 days`). The values file writes dates as ISO
   strings; a date a formula uses from where it was written is saved as `{"$date": "2026-03-31"}`.
+
+### Text
+
+Items can hold text, as pandas' `"string"` columns do: a contract's status, its vendor, the
+reason for a change order. Text is sourced, replaced and kept in the history like any value,
+which attrs (fixed in the definition, with no source) can't be.
+
+```python
+model.add_item("status", ("contract",), dtype=str)        # or dtype="str" / "string"
+model.set_value("status", {"contract": "C-101"}, "signed", SRC)
+model.add_item("flag", ("contract",), dtype=str,
+               formula=lambda x: "over" if x["eac"] > x["committed"] else "within")
+model.add_check("KNOWN-STATUS", coords={"contract": tm.ANY},
+                expect=lambda x: x["status"] in ("signed", "LOI", "not bid"))
+```
+
+- In a formula or check, text compares with `==`, `!=`, `<` (alphabetical) and `in`, and joins
+  with `+`. Comparing text with a number raises `DefinitionError`.
+- `.str` gives a text cell's methods with pandas' names: `contains(text, case=True)` (plain
+  text, not a regular expression), `startswith`, `endswith`, `len()`, `lower()`, `upper()`,
+  `strip()` and `replace(old, new)`: `x["vendor"].str.contains("Ltd")`.
+- Empty text is rejected: when the source shows nothing, enter `tm.NIL`. As with dates, a nil
+  text cell isn't 0: `get()` gives `tm.NIL`, and computing with it raises; test `is_nil()` first.
+- On a `str` item, text passed to `set_value` is always the value, even `"lambda ..."`; pass a
+  cell formula as the lambda itself.
+- A formula's result must fit its dtype: text in a number item raises, and so does a number in
+  a `str` item.
+- Excel writes text cells as text, so a value starting with `=` never becomes an Excel formula.
 
 ### Time dimensions
 
