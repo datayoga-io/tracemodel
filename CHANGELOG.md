@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Versions:** `tm.Repo.open(path, author)` keeps a model under version control in an
+  append-only log. `repo.model` is the branch's model; `repo.commit(message)` writes its pending
+  changes as one commit, `repo.discard()` drops them. `repo.log()`, `repo.at(commit)` (the model
+  at a commit, read-only), `repo.history(item, **coords)` and `repo.export(...)` read it back.
+  The log's records are checksummed and hash-chained; a torn last line and a second writer are
+  caught.
 - **Recording changes:** `with model.recording() as ops:` records every change as a `tm.Op`
   of plain data, which `tm.ops.replay` applies to another model through the same verbs and
   `tm.ops.invert` undoes.

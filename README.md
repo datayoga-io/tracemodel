@@ -770,6 +770,46 @@ RestrictedPython, which routes every attribute, `[]` and loop through tracemodel
 - **Size**: text, lists and `range` up to 100,000 items, whole numbers up to about 3,000 digits,
   a million loop steps per run; `9**9**9` or `[0] * 10**9` raise instead of hanging.
 
+## Versions
+
+A repo keeps a model under version control, as git keeps code: every change is recorded, a
+commit groups changes with an author and a message, and any past commit can be read back.
+
+```python
+repo = tm.Repo.open("models/", author="oren")   # a directory, made if it doesn't exist
+m = repo.model                                 # the branch's model, built from the log
+m.set_value("price", {"term": "T1"}, 10, SRC)
+repo.status()                                  # the changes not yet committed, as tm.Op
+repo.commit("first values")
+
+repo.log()                                     # commits, newest first: id, author, at, message, ops
+repo.at("e4c935b7").get("revenue", term="T1")  # the model at a commit (an id prefix will do), read-only
+repo.history("price", term="T1")               # every change to one value, with its commit
+repo.history("revenue")                        # changes to an item's definition
+repo.discard()                                 # drop the changes not yet committed
+repo.export("m.json", "m.values.jsonl")        # the head as tracemodel's files, to share
+```
+
+| Call | Does |
+| --- | --- |
+| `tm.Repo.open(path, author, *, branch="main", strict=True)` | Opens the repo in a directory, making it if needed. `strict=False` drops a last line a crash cut short instead of refusing to open. |
+| `tm.Repo.memory(author)` | A repo kept in memory only, e.g. for tests. |
+| `repo.model` | The checked-out branch's model: its head, plus changes not yet committed. Changes made through it are recorded (see Recording changes) and stay pending until `commit`. |
+| `repo.commit(message)` | Writes the pending changes to the log as one commit. Refused with nothing pending, or while the model has an open transaction. |
+| `repo.discard()` | Drops the pending changes. |
+| `repo.status()` | The pending changes, as `tm.Op`. |
+| `repo.log()`, `repo.show(commit)` | Commits as `tm.CommitInfo` (`id`, `short`, `parent`, `author`, `at`, `message`, `ops`). |
+| `repo.at(commit)` | The model at a commit, read-only: its verbs raise `DefinitionError`. |
+| `repo.history(item, **coords)` | Every change to one value, oldest first, as `tm.Version` (`commit`, `op`, `value`); without coords on an item with dims, the changes to its definition. |
+| `repo.export(definition, values=None, at=None)` | Writes the head, or the commit `at`, as `model.save` and `model.to_jsonl` do. A repo has no `save`: every commit is written to its log. |
+
+**The log.** A repo keeps one file, `log.ndjson`: one record per line, each a checksum and its
+JSON. A change holds one op; a commit lists its changes and names the commit before it; a branch
+move says where a branch pointed and where it points now. Records are only appended, and each is
+named by a hash of its contents and of the record before it, so an edit to anything already
+written is caught when the log is read. A model is a cache of the log, built by replaying it.
+A second writer on the same directory is refused at commit, and told to open the repo again.
+
 ## Excel export
 
 `model.to_excel(path)` writes the model for people who read models in Excel (needs
