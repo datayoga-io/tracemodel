@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Diff:** `repo.diff(a, b, calculated=True)` and `tm.diff(model_a, model_b)` list the
+  definitions and entered values that differ, and the calculated cells that moved, each naming
+  the differing inputs and formulas it rests on.
 - **Branches:** `repo.new_branch`, `checkout`, `branches`, `drop_branch`, and
   `repo.rebase(branch, onto)`, which lands a branch's changes on another as one commit, checked
   by the model's verbs, or refuses naming every object both sides changed differently

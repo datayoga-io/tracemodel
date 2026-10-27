@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from . import ops
+from .diff import Diff, diff
 from .dimensions import Dimension, Hierarchy
 from .errors import (
     DefinitionError,
@@ -57,6 +58,7 @@ __all__ = [
     "Conflict",
     "Conflicted",
     "DefinitionError",
+    "Diff",
     "DimMismatch",
     "Dimension",
     "Entry",
@@ -81,6 +83,7 @@ __all__ = [
     "UnknownCoord",
     "UnknownItem",
     "Version",
+    "diff",
     "filter_by_attrs",
     "load",
     "ops",
