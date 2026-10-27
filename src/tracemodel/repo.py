@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .diff import Diff, diff
 from .errors import DefinitionError, TraceModelError
 from .log import ROOT, Commit, Log, LogError, LogFile, Record, make_change, make_commit, make_ref
 from .model import Model
@@ -366,6 +367,14 @@ class Repo:
                     info = info or self._info(commit)
                     out.append(Version(info, change.op))
         return out
+
+    def diff(self, a: str, b: str | None = None, *, calculated: bool = False) -> Diff:
+        """What differs from commit or branch `a` to `b` (default: the checked-out model, with
+        its pending changes). With calculated=True, also the calculated cells that moved, each
+        naming the differing values and definitions it rests on."""
+        before = self.at(a)
+        after = self.model if b is None else self.at(b)
+        return diff(before, after, calculated, title=f"{a} -> {b or 'working model'}")
 
     def export(self, definition: str | Path, values: str | Path | None = None, at: str | None = None) -> None:
         """Write the head (or the commit `at`) in tracemodel's files: the definition, as
