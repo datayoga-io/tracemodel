@@ -824,9 +824,46 @@ repo.export("fees.json", "fees.values.jsonl")  # the head as tracemodel's files,
 | `repo.discard()` | Drops the pending changes. |
 | `repo.status()` | The pending changes, as `tm.Op`. |
 | `repo.log()`, `repo.show(commit)` | Commits as `tm.CommitInfo` (`id`, `short`, `parent`, `author`, `at`, `message`, `ops`). |
-| `repo.at(commit)` | The model at a commit, read-only: its verbs raise `DefinitionError`. |
+| `repo.at(commit)` | The model at a commit (an id, a unique prefix, or a branch name), read-only: its verbs raise `DefinitionError`. |
 | `repo.history(item, **coords)` | Every change to one value, oldest first, as `tm.Version` (`commit`, `op`, `value`); without coords on an item with dims, the changes to its definition. |
+| `repo.new_branch(name, frm=None)` | Makes a branch at the head of `frm` (a branch, default the checked-out one, or a commit). |
+| `repo.checkout(name)`, `repo.branch`, `repo.branches()`, `repo.head_of(name)` | Switches the branch `model` and `commit` work on (refused while changes are pending); the checked-out branch; every branch; where one points. |
+| `repo.drop_branch(name)` | Deletes a branch; its commits stay in the log. |
+| `repo.rebase(branch, onto="main", *, message=None, check=False)` | Lands a branch's changes on `onto` as one commit; see Branches. |
+| `repo.conflicts(branch, onto="main")` | The objects both sides changed differently since the branch point, as `tm.Conflict` (`target`, `base`, `ours`, `theirs`). |
 | `repo.export(definition, values=None, at=None)` | Writes the head, or the commit `at`, as `model.save` and `model.to_jsonl` do. A repo has no `save`: every commit is written to its log. |
+
+### Branches
+
+A branch is a line of work: a what-if, a draft, an agent's proposal. It starts at a commit and
+moves as it gets commits; other branches don't see them.
+
+```python
+repo.new_branch("3-high-units")
+repo.checkout("3-high-units")
+repo.model.set_value("units", {"term": "T1"}, 520, SRC)
+repo.commit("what if 520 units")
+repo.at("main").get("fee", term="T1"), repo.at("3-high-units").get("fee", term="T1")   # side by side
+
+repo.rebase("3-high-units", onto="main")   # land it on main, or be told what conflicts
+```
+
+`rebase` takes the branch's changes since the branch point (the last commit both have) and
+applies them, through the model's verbs, to the model at the head of `onto`, then writes them as
+one commit there. Both branches then point at it. History stays a line: nothing merges, and no
+commit has two parents. When `onto` hasn't moved since the branch was made, it just moves along
+(a fast forward).
+
+It is refused, with nothing written:
+
+- when both sides changed an object (a value, an item, a check, a dimension) to different
+  things since the branch point. `tm.Conflicted` names each with its three states; two sides
+  that made the same change don't conflict. Settle it with a commit on either side and rebase
+  again;
+- when a change no longer applies, e.g. it reads an item `onto` removed;
+- with `check=True`, when a check run fails on the result that didn't fail on `onto`.
+
+A what-if that is never rebased is a scenario; compare it with `repo.at(...)`.
 
 **The log.** A repo keeps one file, `log.ndjson`: one record per line, each a checksum and its
 JSON. A change holds one op; a commit lists its changes and names the commit before it; a branch
