@@ -817,7 +817,7 @@ repo.export("fees.json", "fees.values.jsonl")  # the head as tracemodel's files,
 
 | Call | Does |
 | --- | --- |
-| `tm.Repo.open(path, author, *, branch="main", strict=True)` | Opens the repo in a directory, making it if needed. `strict=False` drops a last line a crash cut short instead of refusing to open. |
+| `tm.Repo.open(path, author, *, branch="main", strict=True, self_approve=True)` | Opens the repo in a directory, making it if needed. `strict=False` drops a last line a crash cut short instead of refusing to open. `self_approve=False` for an author whose changes someone else must accept, such as an agent (see Review). |
 | `tm.Repo.memory(author)` | A repo kept in memory only, e.g. for tests. |
 | `repo.model` | The checked-out branch's model: its head, plus changes not yet committed. Changes made through it are recorded (see Recording changes) and stay pending until `commit`. |
 | `repo.commit(message)` | Writes the pending changes to the log as one commit. Refused with nothing pending, or while the model has an open transaction. |
@@ -832,6 +832,11 @@ repo.export("fees.json", "fees.values.jsonl")  # the head as tracemodel's files,
 | `repo.rebase(branch, onto="main", *, message=None, check=False)` | Lands a branch's changes on `onto` as one commit; see Branches. |
 | `repo.conflicts(branch, onto="main")` | The objects both sides changed differently since the branch point, as `tm.Conflict` (`target`, `base`, `ours`, `theirs`). |
 | `repo.diff(a, b=None, *, calculated=False)` | What differs from commit or branch `a` to `b` (default: the working model, with its pending changes); see Diff. |
+| `repo.review(branch, onto="main")`, `repo.unreviewed(...)` | What a branch proposes, with each decision; see Review. |
+| `repo.accept(branch, *scopes, note="")`, `repo.reject(...)`, `repo.comment(branch, scope, note)` | Rule on what a branch changes; see Review. |
+| `repo.approve(branch, onto="main", *, message=None, check=True)` | Lands what was accepted, as one commit. |
+| `repo.approved_by(item, branch=None, **coords)` | Who let a value in. |
+| `repo.as_author(author, *, self_approve=True)` | The same repo, worked on by another author. |
 | `repo.export(definition, values=None, at=None)` | Writes the head, or the commit `at`, as `model.save` and `model.to_jsonl` do. A repo has no `save`: every commit is written to its log. |
 
 ### Branches
@@ -865,6 +870,49 @@ It is refused, with nothing written:
 - with `check=True`, when a check run fails on the result that didn't fail on `onto`.
 
 A what-if that is never rebased is a scenario; compare it with `repo.diff`.
+
+### Review
+
+An agent drafts on a branch; a person reads what it changes, changes or rules on it, and lands
+what was accepted. Main only ever holds approved work.
+
+```python
+from tracemodel import review as rv
+
+agent = tm.Repo.open("fees/", author="agent:fee-forecast", self_approve=False)
+agent.new_branch("proposal/architect"); agent.checkout("proposal/architect")
+agent.model.set_value("units", {"term": "T1"}, 470, SRC,
+                      meta={"confidence": "assumed", "reasoning": "units open; 470 from the feasibility study"})
+agent.commit("read the architect agreement")
+
+dana = tm.Repo.open("fees/", author="dana")
+dana.review("proposal/architect").show()      # each change: before, after, confidence, author, decision;
+                                              # and each calculated cell it moves, with what it rests on
+dana.accept("proposal/architect", rv.ALL, note="matches the agreement")
+dana.reject("proposal/architect", rv.cell("units", term="T1"), note="470 is the old plan")
+dana.approve("proposal/architect")            # lands the accepted changes on main, as one commit
+dana.approved_by("rate", term="T1")           # "dana"
+```
+
+A ruling is a record in the log, never a field on the value: the value's `meta` is what its
+writer said; a ruling is what someone else decided. It names a scope, narrowest first:
+`rv.cell(item, **coords)` (one value), `rv.slice(**coords)` (every value at those labels),
+`rv.item(name)` / `rv.check(id)` / `rv.dimension(name)` (a definition, and an item's values),
+`rv.commit(id)`, and `rv.ALL`. The narrowest ruling that covers a change decides it; at the same
+level the later one wins, so a reject can follow an accept. A ruling covers the changes up to the
+branch head it was made at: a value the agent changes again afterwards is undecided again.
+
+- **Nobody approves their own changes.** A ruling never counts for a change its author made,
+  and one that covers only their own changes is refused. An author with `self_approve` (a
+  person, the default) accepts their own commits as they make them, so a reviewer can correct
+  the draft on its branch and approve the rest.
+- **`approve` lands only what was accepted;** rejected and undecided changes stay on the branch,
+  and approving again later lands what was accepted since. It is refused, with nothing written,
+  when an accepted value needs a definition that isn't accepted (an item the branch added),
+  when main changed an accepted object differently, or (with `check=True`, the default) when a
+  check newly fails on the result.
+- **Only entered values are ruled on.** A calculated cell isn't stored; the review lists the
+  ones the branch moves, each naming the undecided changes it rests on.
 
 ### Diff
 

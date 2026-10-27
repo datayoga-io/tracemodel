@@ -6,7 +6,7 @@ record. The design is basin's (datayoga/basis): changes, commits and branch move
 each named by a hash of its contents and of the record of its kind before it, so changing
 anything already written changes every name after it.
 
-Three kinds of record:
+Four kinds of record:
 
 - `Change`: one op (`tracemodel.ops.Op`).
 - `Commit`: the changes it lists, the commit it follows (`parent`), who and when and why. A
@@ -14,6 +14,7 @@ Three kinds of record:
   parent, never two.
 - `Ref`: a branch moved, from the commit it was believed to point at (`expected`) to another
   (`target`). A branch's position is its latest move; ROOT ("") means no commit.
+- `Review`: a person's ruling on changes proposed on a branch (`tracemodel.review`).
 
 On disk the log is one file of lines, each a crc32 of its JSON payload, a space, the payload.
 The first line declares the format. A line with no newline is a write a crash cut short: reading
@@ -87,11 +88,13 @@ class Commit:
     at: str
     message: str
     changes: tuple[str, ...]
+    info: dict[str, Any] = field(default_factory=dict)  # e.g. {"approved": True}, {"approves": "proposal/x"}
     kind: str = "commit"
 
     def payload(self) -> dict[str, Any]:
-        return {"parent": self.parent, "author": self.author, "at": self.at, "message": self.message,
+        data = {"parent": self.parent, "author": self.author, "at": self.at, "message": self.message,
                 "changes": list(self.changes)}
+        return data | ({"info": self.info} if self.info else {})
 
 
 @dataclass(frozen=True)
@@ -110,7 +113,27 @@ class Ref:
                 "at": self.at, "note": self.note}
 
 
-Record = Change | Commit | Ref
+@dataclass(frozen=True)
+class Review:
+    """A ruling on what a branch proposes: `action` (accept, reject or comment) on `scope` (see
+    tracemodel.review), by `actor`, covering the changes up to the branch's `head` when made."""
+
+    id: str
+    branch: str
+    scope: str
+    action: str
+    actor: str
+    at: str
+    head: str
+    note: str = ""
+    kind: str = "review"
+
+    def payload(self) -> dict[str, Any]:
+        return {"branch": self.branch, "scope": self.scope, "action": self.action, "actor": self.actor,
+                "at": self.at, "head": self.head, "note": self.note}
+
+
+Record = Change | Commit | Ref | Review
 
 
 @dataclass
@@ -127,7 +150,8 @@ class Log:
         self._commit_of: dict[str, str] = {}  # change -> the commit that lists it
         self._children: dict[str, list[str]] = {}
         self._moves: dict[str, list[Ref]] = {}  # branch -> its moves, oldest first: the reflog
-        self._last: dict[str, str] = {"change": ROOT, "ref": ROOT}  # chain heads, per kind
+        self._last: dict[str, str] = {"change": ROOT, "ref": ROOT, "review": ROOT}  # chain heads, per kind
+        self._reviews: dict[str, list[Review]] = {}  # branch -> its rulings, oldest first
         for r in records:
             self.add(r)
 
@@ -155,6 +179,9 @@ class Log:
             self._children.setdefault(record.parent, []).append(record.id)
             for c in record.changes:
                 self._commit_of[c] = record.id
+        elif isinstance(record, Review):
+            self._reviews.setdefault(record.branch, []).append(record)
+            self._last["review"] = record.id
         else:
             self._moves.setdefault(record.name, []).append(record)
             self._last["ref"] = record.id
@@ -181,6 +208,15 @@ class Log:
     def branches(self) -> list[str]:
         """Branches that point at a commit."""
         return sorted(name for name in self._moves if self.head(name) != ROOT)
+
+    def reviews(self, branch: str) -> list[Review]:
+        return list(self._reviews.get(branch, ()))
+
+    def position(self, id: str) -> int:
+        return self._pos[id]
+
+    def commit_of(self, change: str) -> str:
+        return self._commit_of[change]
 
     def moves(self, branch: str) -> list[Ref]:
         return list(self._moves.get(branch, ()))
@@ -224,7 +260,10 @@ def _record(data: dict[str, Any]) -> Record:
         return Change(data["id"], Op.from_data(data["op"]))
     if kind == "commit":
         return Commit(data["id"], data["parent"], data["author"], data["at"], data["message"],
-                      tuple(data["changes"]))
+                      tuple(data["changes"]), dict(data.get("info") or {}))
+    if kind == "review":
+        return Review(data["id"], data["branch"], data["scope"], data["action"], data["actor"], data["at"],
+                      data["head"], data.get("note", ""))
     if kind == "ref":
         return Ref(data["id"], data["name"], data["expected"], data["target"], data["author"], data["at"],
                    data.get("note", ""))
@@ -300,9 +339,19 @@ def make_change(previous: str, op: Op) -> Change:
     return Change(chain_id(previous, {"op": op.to_data()}), op)
 
 
-def make_commit(parent: str, author: str, at: str, message: str, changes: tuple[str, ...]) -> Commit:
+def make_commit(parent: str, author: str, at: str, message: str, changes: tuple[str, ...],
+                info: dict[str, Any] | None = None) -> Commit:
     payload = {"parent": parent, "author": author, "at": at, "message": message, "changes": list(changes)}
-    return Commit(chain_id(parent, payload), parent, author, at, message, changes)
+    if info:
+        payload["info"] = info
+    return Commit(chain_id(parent, payload), parent, author, at, message, changes, dict(info or {}))
+
+
+def make_review(previous: str, branch: str, scope: str, action: str, actor: str, at: str, head: str,
+                note: str = "") -> Review:
+    payload = {"branch": branch, "scope": scope, "action": action, "actor": actor, "at": at, "head": head,
+               "note": note}
+    return Review(chain_id(previous, payload), branch, scope, action, actor, at, head, note)
 
 
 def make_ref(previous: str, name: str, expected: str, target: str, author: str, at: str, note: str = "") -> Ref:

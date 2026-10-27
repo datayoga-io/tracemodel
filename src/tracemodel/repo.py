@@ -20,13 +20,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import review as rv
 from .diff import Diff, diff
 from .errors import DefinitionError, TraceModelError
-from .log import ROOT, Commit, Log, LogError, LogFile, Record, make_change, make_commit, make_ref
+from .log import ROOT, Commit, Log, LogError, LogFile, Record, make_change, make_commit, make_ref, make_review
 from .model import Model
 from .ops import Op, apply, replay, same, state
 
-__all__ = ["CommitInfo", "Conflict", "Conflicted", "Rebased", "Repo", "Version"]
+__all__ = ["Approved", "CommitInfo", "Conflict", "Conflicted", "Rebased", "Repo", "Version"]
 
 MAIN = "main"
 _KEEP = 8  # models at past commits kept for reading
@@ -107,6 +108,18 @@ class Rebased:
         return self.commit is None
 
 
+@dataclass(frozen=True)
+class Approved:
+    """What approve landed: the accepted objects, in one commit on `onto`, and what it left on
+    the branch (rejected or undecided)."""
+
+    branch: str
+    onto: str
+    commit: CommitInfo | None
+    landed: tuple[str, ...]
+    left: tuple[str, ...]
+
+
 def _short(value: Any) -> str:
     if value is None:
         return "nothing"
@@ -141,27 +154,37 @@ class Repo:
     """A model's log, its branches, and a model per branch built from them."""
 
     def __init__(self, log: Log, file: LogFile | None, author: str, branch: str = MAIN,
-                 clock: Callable[[], str] = _now):
+                 clock: Callable[[], str] = _now, self_approve: bool = True):
         if not isinstance(author, str) or not author.strip():
             raise DefinitionError("a repo needs an author: who makes its commits, e.g. author='oren'")
         self._log, self._file, self.author, self._branch, self._clock = log, file, author, branch, clock
+        self.self_approve = self_approve  # this author's commits are accepted by them (a person); False for an agent
         self._model: Model | None = None  # the checked-out branch's model, with its pending ops
+        self._model_head = ROOT  # the commit it was built from
         self._at: OrderedDict[str, Model] = OrderedDict()  # read-only models at past commits
 
     @classmethod
     def open(cls, path: str | Path, author: str, *, branch: str = MAIN, strict: bool = True,
-             clock: Callable[[], str] = _now) -> Repo:
+             clock: Callable[[], str] = _now, self_approve: bool = True) -> Repo:
         """The repo in directory `path`, made if it doesn't exist. strict=False drops a last
-        line a crash cut short instead of refusing to open."""
+        line a crash cut short instead of refusing to open. self_approve=False for an author
+        whose changes someone else must accept (an agent): see tracemodel.review."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         file = LogFile(path / "log.ndjson")
-        return cls(Log(file.read(strict=strict)), file, author, branch, clock)
+        return cls(Log(file.read(strict=strict)), file, author, branch, clock, self_approve)
 
     @classmethod
-    def memory(cls, author: str, *, branch: str = MAIN, clock: Callable[[], str] = _now) -> Repo:
+    def memory(cls, author: str, *, branch: str = MAIN, clock: Callable[[], str] = _now,
+               self_approve: bool = True) -> Repo:
         """A repo kept in memory only, e.g. for tests."""
-        return cls(Log(), None, author, branch, clock)
+        return cls(Log(), None, author, branch, clock, self_approve)
+
+    def as_author(self, author: str, *, self_approve: bool = True) -> Repo:
+        """The same log, worked on by another author: e.g. a reviewer reading an agent's repo
+        in one process. Both write to the same log."""
+        other = type(self)(self._log, self._file, author, self._branch, self._clock, self_approve)
+        return other
 
     # -- the checked-out branch ---------------------------------------------
     @property
@@ -180,8 +203,10 @@ class Repo:
     @property
     def model(self) -> Model:
         """The checked-out branch's model: its head, plus the changes not yet committed."""
+        if self._model is not None and self._model_head != self.head and not self._model._journal:
+            self._model = None  # the branch moved (another author committed to it): build it again
         if self._model is None:
-            self._model = self._build(self.head)
+            self._model, self._model_head = self._build(self.head), self.head
             self._model._journal = []
         return self._model
 
@@ -297,6 +322,168 @@ class Repo:
                 out.append(Conflict(op.target, b, o, t))
         return out
 
+    # -- review --------------------------------------------------------------
+    def review(self, branch: str, onto: str = MAIN) -> rv.Report:
+        """What `branch` changes since it left `onto`, object by object, with each decision; and
+        the calculated cells it moves, each naming the undecided changes it rests on."""
+        proposed = self._proposed(branch, onto)
+        point = self.branch_point(branch, onto)
+        base = self._build(point) if point != ROOT else Model()
+        mine = self.at(branch)
+        items = []
+        for target, (op, change, commit, author) in proposed.items():
+            before, after = state(base, op), state(mine, op)
+            if same(before, after):
+                continue
+            decision, by, level, note, comments = self._decide(branch, target, op.key, commit, author)
+            items.append(rv.Item(target, "added" if before is None else "removed" if after is None else "changed",
+                                 before, after, author, commit, dict((after or {}).get("meta") or {})
+                                 if target.startswith("value:") else {}, decision, by, level, note, comments))
+        open_ = {i.target for i in items if i.decision is None}
+        calculated = [c for c in diff(base, mine, calculated=True).of("calc")]
+        calculated = [type(c)(c.target, c.change, c.before, c.after, tuple(t for t in c.because if t in open_))
+                      for c in calculated]
+        return rv.Report(branch, onto, items, calculated)
+
+    def unreviewed(self, branch: str, onto: str = MAIN) -> list[str]:
+        """The objects `branch` changes that nobody has accepted or rejected."""
+        return [i.target for i in self.review(branch, onto).undecided()]
+
+    def accept(self, branch: str, *scopes: str, note: str = "", by: str | None = None, onto: str = MAIN) -> None:
+        """Accept what `branch` changes in each scope (see tracemodel.review: cell, slice, item,
+        commit, ALL). Refused when a scope covers nothing the branch changed, or only changes
+        the reviewer made themselves."""
+        self._rule(branch, scopes, "accept", note, by, onto)
+
+    def reject(self, branch: str, *scopes: str, note: str = "", by: str | None = None, onto: str = MAIN) -> None:
+        """Reject what `branch` changes in each scope; it stays on the branch and never lands."""
+        self._rule(branch, scopes, "reject", note, by, onto)
+
+    def comment(self, branch: str, scope: str, note: str, *, by: str | None = None, onto: str = MAIN) -> None:
+        """Say something about a change without deciding it."""
+        if not note.strip():
+            raise DefinitionError("a comment needs a note")
+        self._rule(branch, (scope,), "comment", note, by, onto)
+
+    def approve(self, branch: str, onto: str = MAIN, *, message: str | None = None, check: bool = True) -> Approved:
+        """Land what was accepted on `branch` onto `onto` as one commit; rejected and undecided
+        changes stay on the branch. Refused, with nothing written, when nothing is accepted, an
+        accepted change needs a definition that isn't (naming it), the two sides conflict on an
+        accepted object, or (with check=True, the default) a check newly fails on the result."""
+        if self.status():
+            raise LogError("commit or discard the pending changes before approving")
+        report = self.review(branch, onto)
+        accepted = {i.target for i in report.accepted()}
+        if not accepted:
+            raise LogError(f"nothing on {branch!r} is accepted yet; accept changes with repo.accept")
+        changed = {i.target for i in report.items}
+        for i in report.accepted():
+            if i.kind == "value":
+                key = self._proposed(branch, onto)[i.target][0].key
+                needs = [f"item:{key['item']}", *(f"dimension:{d}" for d in key["coords"])]
+                missing = [n for n in needs if n in changed and n not in accepted]
+                if missing:
+                    raise LogError(f"approving {branch!r}: {i.target} needs {', '.join(missing)}, which isn't "
+                                   f"accepted; accept it too, or reject {i.target}")
+        conflicts = [c for c in self.conflicts(branch, onto) if c.target in accepted]
+        if conflicts:
+            raise Conflicted(branch, onto, conflicts)
+        point, there = self.branch_point(branch, onto), self._log.head(onto)
+        ops = [ch.op for c in self._after(self._log.head(branch), point) for ch in self._log.changes_in(c)
+               if ch.op.target in accepted]
+        trial = self._build(there) if there != ROOT else Model()
+        before = trial.check() if check else None
+        with trial.recording() as carried:
+            try:
+                with trial.transaction():
+                    for op in _net(ops):
+                        if not same(state(trial, op), op.new):
+                            apply(trial, op)
+            except TraceModelError as e:
+                raise LogError(f"approving {branch!r}: {e}") from None
+        if check:
+            _refuse_new_failures(before, trial.check(), branch, onto)
+        left = tuple(i.target for i in report.items if i.target not in accepted)
+        if not carried:
+            return Approved(branch, onto, None, (), left)
+        by = {i.target: i.by for i in report.accepted()}
+        commit = self._write(list(carried), message or f"approve {branch}: {len(accepted)} accepted", onto,
+                             info={"approves": branch, "by": by})
+        if self._branch == onto:
+            self._model = None
+        return Approved(branch, onto, self._info(commit), tuple(sorted(accepted)), left)
+
+    def approved_by(self, line_item: str, branch: str | None = None, **coords: str) -> str | None:
+        """Who let a value on a branch (main by default) in: the reviewer who accepted it, or
+        its author when they approve their own commits; None when nobody did."""
+        versions = self.history(line_item, branch or MAIN, **coords)
+        if not versions:
+            return None
+        v = versions[-1]
+        info = self._log.commit(v.commit.id).info
+        if "approves" in info:
+            return info.get("by", {}).get(v.op.target)
+        return v.commit.author if info.get("approved") else None
+
+    def _proposed(self, branch: str, onto: str) -> dict[str, tuple[Op, str, str, str]]:
+        """Each object the branch changed since the branch point: its last op, that change, the
+        commit it is in, and the commit's author."""
+        point = self.branch_point(branch, onto)
+        out: dict[str, tuple[Op, str, str, str]] = {}
+        for c in self._after(self._log.head(branch), point):
+            commit = self._log.commit(c)
+            for ch in self._log.changes_in(c):
+                out.pop(ch.op.target, None)  # in the order last changed
+                out[ch.op.target] = (ch.op, ch.id, c, commit.author)
+        return out
+
+    def _decide(self, branch: str, target: str, key: Any, commit: str,
+                author: str) -> tuple[str | None, str | None, str | None, str, tuple[str, ...]]:
+        """The narrowest ruling covering a change, the later at the same level; nobody's own."""
+        candidates: list[tuple[int, int, str, str, str]] = []  # level, position, action, actor, note
+        comments = []
+        if self._log.commit(commit).info.get("approved"):  # its author approves their own commits
+            candidates.append((rv.LEVELS.index("commit"), self._log.position(commit), "accept", author, ""))
+        seen: dict[str, frozenset[str]] = {}
+        for r in self._log.reviews(branch):
+            lv = rv.level(r.scope, target, key, commit)
+            if lv is None:
+                continue
+            if r.head not in seen:
+                seen[r.head] = frozenset(self._log.ancestry(r.head))
+            if commit not in seen[r.head]:  # made before this change: it didn't see it
+                continue
+            if r.action == "comment":
+                comments.append(f"{r.actor}: {r.note}")
+            elif r.actor != author:  # nobody rules on their own change
+                candidates.append((lv, self._log.position(r.id), r.action, r.actor, r.note))
+        if not candidates:
+            return None, None, None, "", tuple(comments)
+        lv, _, action, by, note = min(candidates, key=lambda c: (c[0], -c[1]))  # narrowest, then latest
+        return ("accepted" if action == "accept" else "rejected"), by, rv.LEVELS[lv], note, tuple(comments)
+
+    def _rule(self, branch: str, scopes: tuple[str, ...], action: str, note: str, by: str | None,
+              onto: str) -> None:
+        if not scopes:
+            raise DefinitionError(f"say what to {action}: a scope such as tm.review.cell(...) or tm.review.ALL")
+        by = by or self.author
+        head = self._log.head(branch)
+        if head == ROOT:
+            raise LogError(f"no branch {branch!r}")
+        proposed = self._proposed(branch, onto)
+        records: list[Record] = []
+        previous = self._log.last("review")
+        for scope in scopes:
+            covered = [(t, a) for t, (op, _, c, a) in proposed.items()
+                       if rv.level(scope, t, op.key, c) is not None]
+            if not covered:
+                raise LogError(f"{scope!r} covers nothing {branch!r} changed")
+            if action != "comment" and all(a == by for _, a in covered):
+                raise LogError(f"{by!r} can't {action} {scope!r}: they made those changes; someone else reviews them")
+            records.append(make_review(previous, branch, scope, action, by, self._clock(), head, note))
+            previous = records[-1].id
+        self._append(records)
+
     def status(self) -> list[Op]:
         """The changes made to `model` and not yet committed."""
         return list(self._model._journal) if self._model is not None and self._model._journal else []
@@ -311,8 +498,13 @@ class Repo:
         ops = self.status()
         if not ops:
             raise LogError("nothing to commit")
-        commit = self._write(ops, message)
+        if self._model_head != self.head:
+            from .log import StaleRef
+
+            raise StaleRef(self._branch, self._model_head, self.head)
+        commit = self._write(ops, message, info={"approved": True} if self.self_approve else None)
         model._journal.clear()  # type: ignore[union-attr]
+        self._model_head = commit.id
         return self._info(commit)
 
     def discard(self) -> None:
@@ -394,7 +586,7 @@ class Repo:
         return replay(Model(), ops)
 
     def _write(self, ops: list[Op], message: str, branch: str | None = None,
-               also: list[tuple[str, str]] = ()) -> Commit:  # type: ignore[assignment]
+               also: list[tuple[str, str]] = (), info: dict[str, Any] | None = None) -> Commit:  # type: ignore[assignment]
         """Append ops as one commit on a branch and move the branch (and any `also` branches,
         from the commit each holds) to it."""
         branch = branch or self._branch
@@ -404,7 +596,7 @@ class Repo:
             changes.append(make_change(previous, op))
             previous = changes[-1].id
         parent = self._log.head(branch)
-        commit = make_commit(parent, self.author, at, message.strip(), tuple(c.id for c in changes))
+        commit = make_commit(parent, self.author, at, message.strip(), tuple(c.id for c in changes), info)
         refs = [make_ref(self._log.last("ref"), branch, parent, commit.id, self.author, at, "commit")]
         for name, held in also:
             refs.append(make_ref(refs[-1].id, name, held, commit.id, self.author, at, f"rebased onto {branch}"))
