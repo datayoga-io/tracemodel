@@ -463,14 +463,16 @@ class _Writer:
         from .model import _is_formula
 
         dims = list(self.model.dimensions)
-        header = ["item", *dims, "value", "kind", "document", "section", "page", "quote", "url", "overrides_formula"]
+        header = ["item", *dims, "value", "kind", "document", "section", "page", "quote", "url", "overrides_formula",
+                  "confidence", "reasoning", "origin"]
         rows = []
         for e in self.model:
             kind = "nil" if e.value is NIL else "formula" if _is_formula(e.value) else "value"
             shown = f"= {e.value!r}" if kind == "formula" else e.value
             s = e.source
             rows.append([e.item, *(e.coords.get(d) for d in dims), shown, kind, s.get("document"),
-                         s.get("section"), s.get("page"), s.get("quote"), s.get("url"), e.overrides_formula or None])
+                         s.get("section"), s.get("page"), s.get("quote"), s.get("url"), e.overrides_formula or None,
+                         e.meta.get("confidence"), e.meta.get("reasoning"), e.meta.get("origin")])
         n = len(dims)
         self._table(ws, "Values", header, rows, {1: 32, n + 2: 16, n + 4: 40, n + 5: 50})
         for i, row in enumerate(rows, start=2):
@@ -520,9 +522,9 @@ def _state(model: Model, item: Item, full: Mapping[str, str]) -> tuple[Any, str 
         return None, None, None, key
     value = model._value(Cell(model, item, dict(full)), {})
     if e is not None and _is_formula(e.value):
-        return value, "cell_formula", f"= {e.value!r}\nSource: {_source(e.source)}", key
+        return value, "cell_formula", f"= {e.value!r}\nSource: {_source(e.source)}{_said(e.meta)}", key
     if e is not None:
-        note = f"Source: {_source(e.source)}"
+        note = f"Source: {_source(e.source)}{_said(e.meta)}"
         if e.overrides_formula:
             return value, "override", f"{note}\nOverrides the formula: {item.formula!r}", key
         return value, "entered", note, key
@@ -574,6 +576,11 @@ def _dates(dim, label) -> tuple[date | None, date | None]:
 def _title(item: Item) -> str:
     """The item as people read it: its description, else its name in words."""
     return item.description or item.name.replace("_", " ").capitalize()
+
+
+def _said(meta: Mapping[str, Any]) -> str:
+    """A value's meta for its cell's note: confidence, reasoning, origin."""
+    return "".join(f"\n{k.capitalize()}: {meta[k]}" for k in ("confidence", "reasoning", "origin") if k in meta)
 
 
 def _source(s: Mapping[str, Any]) -> str:

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Confidence and reasoning on a value:** `set_value(..., meta={"confidence": ..., "reasoning":
+  ..., "origin": ...})`. `model.inputs(...)` lists the entered values a figure rests on and
+  `model.confidence(...)` gives the weakest of theirs, so the assumptions behind a figure can be
+  found. A source may cite a document's `sha256`.
 - **Verbs that undo:** `remove_item`, `set_formula`, `update_item`, `remove_check`,
   `clear_value` and `remove_coords`. Each refuses, with nothing changed, while a formula or a
   check still reads what it would remove; in a transaction that is checked at commit.

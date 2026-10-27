@@ -14,7 +14,9 @@ if TYPE_CHECKING:
     from .model import Check, Model
 
 SOURCE_REQUIRED = ("document", "url", "section")
-SOURCE_OPTIONAL = ("page", "quote")
+SOURCE_OPTIONAL = ("page", "quote", "sha256")
+CONFIDENCE = ("assumed", "inferred", "stated")  # weakest first: a guess, read between the lines, as written
+META_KEYS = ("confidence", "reasoning", "origin")  # what the writer says about a value, beside its source
 
 
 class _Nil:
@@ -45,10 +47,13 @@ class Entry:
     source: dict[str, Any]
     history: list[tuple[float | _Nil | Formula, dict[str, Any]]] = field(default_factory=list)  # replaced (value, source)
     overrides_formula: bool = False  # entered over the item's formula
+    meta: dict[str, Any] = field(default_factory=dict)  # confidence, reasoning, origin: what the writer says
 
     def to_json(self) -> dict[str, Any]:
         row = {"line_item": self.item, "coords": self.coords,
                "value": None if self.value is NIL else dates.to_json(self.value), "source": self.source}
+        if self.meta:
+            row["meta"] = self.meta
         return row | ({"overrides_formula": True} if self.overrides_formula else {})
 
 

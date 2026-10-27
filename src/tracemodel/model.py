@@ -36,6 +36,8 @@ from .formula import Formula, FormulaBase, Uncompiled, compare, env_from_data
 from .periods import PeriodRange
 from .table import Table
 from .values import (
+    CONFIDENCE,
+    META_KEYS,
     NIL,
     SOURCE_OPTIONAL,
     SOURCE_REQUIRED,
@@ -890,7 +892,8 @@ class Model:
 
     # == 4. values ==========================================================
     def set_value(
-        self, line_item: str, coords: Mapping[str, str], value: float, source: Mapping[str, Any]
+        self, line_item: str, coords: Mapping[str, str], value: float, source: Mapping[str, Any],
+        meta: Mapping[str, Any] | None = None,
     ) -> None:
         """Enter a value with its source. The last write wins; the value it replaces, and that
         value's source, are kept in the entry's history. On a formula item it overrides the
@@ -898,6 +901,10 @@ class Model:
 
         `value` may be a lambda of x, or its source text ("lambda x: ..."): a formula for this
         one cell, e.g. a contract's escalator, sourced like any value.
+
+        `meta` is what the writer says about the value: `confidence` ("stated", "inferred" or
+        "assumed"), `reasoning` (why it has this value) and `origin` (who or what wrote it). A new
+        value never keeps the old value's meta.
         """
         key, full = self._key(line_item, coords)
         item = self.items[line_item]
@@ -907,14 +914,15 @@ class Model:
         if item.dtype in dates.TEMPORAL and value is not NIL and not _is_formula(value):
             value = dates.coerce(item.dtype, value, f"{line_item}{_fmt(full)}")
         self._validate(item, value, source)
+        meta = _checked_meta(meta, f"{line_item}{_fmt(full)}")
         previous = self._entries.get(key)
         if previous is not None:
             self._entries[key] = Entry(line_item, full, value, dict(source),
                                        [*previous.history, (previous.value, previous.source)],
-                                       previous.overrides_formula)
+                                       previous.overrides_formula, meta)
         else:
             self._entries[key] = Entry(line_item, full, value, dict(source),
-                                       overrides_formula=item.formula is not None)
+                                       overrides_formula=item.formula is not None, meta=meta)
         self._value_changed(key)
         if item.formula is not None or _is_formula(value) or (previous is not None and _is_formula(previous.value)):
             self._dependents_index = None  # which cells have formulas changed
@@ -964,6 +972,31 @@ class Model:
                 raise MissingValue(f"{line_item}{_fmt(full)}: its formula {formula!r} reads a cell with no value")
         return 0 if value is NIL and item.dtype not in _NOT_NUMBERS else value
 
+    def inputs(self, line_item: str, **coords: str) -> list[Entry]:
+        """The entered values a cell rests on: itself when entered, else every entered cell its
+        formula can read, all the way down (both arms of a branch count). A cell formula is
+        followed to what it reads."""
+        key, _ = self._key(line_item, coords)
+        out: list[Entry] = []
+        stack, seen = [key], {key}
+        while stack:
+            k = stack.pop(0)
+            e = self._entries.get(k)
+            if e is not None and not _is_formula(e.value):
+                out.append(e)
+                continue
+            for read in self._precedent_keys(k):
+                if read not in seen:
+                    seen.add(read)
+                    stack.append(read)
+        return out
+
+    def confidence(self, line_item: str, **coords: str) -> str | None:
+        """The weakest confidence among the entered values a cell rests on ("assumed" before
+        "inferred" before "stated"); None when none of them states one."""
+        stated = [e.meta["confidence"] for e in self.inputs(line_item, **coords) if "confidence" in e.meta]
+        return min(stated, key=CONFIDENCE.index) if stated else None
+
     def entry(self, line_item: str, **coords: str) -> Entry | Table:
         """One entry when coords are complete; otherwise a table of the matching entries."""
         item = self.item(line_item)
@@ -973,14 +1006,17 @@ class Model:
             if d not in item.dims:
                 raise DimMismatch(f"{line_item} has no dim {d!r}")
             self.dimensions[d].require(label)
+        entries = [e for e in self._entries.values()
+                   if e.item == line_item and all(e.coords[d] == v for d, v in coords.items())]
+        said = any(e.meta for e in entries)  # a confidence column only when someone stated one
         rows = [
             [*(e.coords[d] for d in item.dims), f"= {e.value!r}" if _is_formula(e.value) else e.value,
-             _source_text(e.source),
+             _source_text(e.source), *([e.meta.get("confidence")] if said else []),
              len(e.history)]
-            for e in self._entries.values()
-            if e.item == line_item and all(e.coords[d] == v for d, v in coords.items())
+            for e in entries
         ]
-        return Table([*item.dims, "value", "source", "replaced"], rows, title=f"{line_item} entries")
+        return Table([*item.dims, "value", "source", *(["confidence"] if said else []), "replaced"], rows,
+                     title=f"{line_item} entries")
 
     def table(self, line_item: str) -> Table:
         """The item as a grid: periods across, other dims down."""
@@ -1178,7 +1214,7 @@ class Model:
                         value: Any = _formula_from_data(row, "formula", where, formulas)
                     else:
                         value = NIL if row["value"] is None else row["value"]
-                    self.set_value(row["line_item"], row["coords"], value, row["source"])
+                    self.set_value(row["line_item"], row["coords"], value, row["source"], row.get("meta"))
 
     # == display ============================================================
     def __repr__(self) -> str:
@@ -1378,6 +1414,24 @@ class Model:
                 [f"unknown {', '.join(extra)}"] if extra else []
             )
             raise InvalidValue(f"source: {'; '.join(problems)}")
+
+
+def _checked_meta(meta: Mapping[str, Any] | None, where: str) -> dict[str, Any]:
+    """A value's meta: known keys only, a confidence from the scale, text that says something."""
+    if meta is None:
+        return {}
+    if not isinstance(meta, Mapping):
+        raise InvalidValue(f"{where}: meta must be a dict with {', '.join(META_KEYS)}, got {meta!r}")
+    extra = [k for k in meta if k not in META_KEYS]
+    if extra:
+        raise InvalidValue(f"{where}: meta: unknown {', '.join(map(str, extra))}; meta takes {', '.join(META_KEYS)}")
+    if "confidence" in meta and meta["confidence"] not in CONFIDENCE:
+        raise InvalidValue(f"{where}: meta: confidence must be one of {', '.join(CONFIDENCE)}, "
+                           f"got {meta['confidence']!r}")
+    for k in ("reasoning", "origin"):
+        if k in meta and not (isinstance(meta[k], str) and meta[k].strip()):
+            raise InvalidValue(f"{where}: meta: {k} must be text, got {meta[k]!r}")
+    return dict(meta)
 
 
 def _definition(dim: Dimension) -> tuple:

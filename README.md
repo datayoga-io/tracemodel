@@ -171,10 +171,12 @@ model = tm.Model()
 
 | Call | Does |
 | --- | --- |
-| `set_value(line_item, coords, value, source)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers; `str` items take text; date items take a date or an ISO string), or `tm.NIL` (see below), or a lambda (or its text, `"lambda x: ..."`, except on a `str` item, where text is the value): a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
+| `set_value(line_item, coords, value, source, meta=None)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers; `str` items take text; date items take a date or an ISO string), or `tm.NIL` (see below), or a lambda (or its text, `"lambda x: ..."`, except on a `str` item, where text is the value): a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. `meta` is what the writer says about the value; see Confidence and reasoning. |
 | `clear_value(line_item, coords)` | Removes a cell's entered value, so it is not entered again (unlike `tm.NIL`, which says the source shows nothing). On a formula item, the item's formula calculates the cell again. |
 | `get(line_item, **coords)` | The value at full coords: a number, or a date for a date item (0 for a nil cell; `tm.NIL` for a nil date). |
-| `entry(line_item, **coords)` | With full coords: an `Entry` (`value`, `source`, `history`). With fewer coords: a `Table` of matching entries. |
+| `entry(line_item, **coords)` | With full coords: an `Entry` (`value`, `source`, `meta`, `history`). With fewer coords: a `Table` of matching entries. |
+| `inputs(line_item, **coords)` | The entered values a cell rests on: itself when entered, else every entered cell its formula can read, all the way down. |
+| `confidence(line_item, **coords)` | The weakest `confidence` among `inputs(...)`, or `None` when none states one. |
 | `table(line_item)` | The item as a grid: `period` across (if the item has it), other dims down. Cells not entered are blank; nil cells show `—`. |
 | `evaluate(formula)` | Runs a lambda of `x` for every combination of the dims its cells leave open, e.g. `model.evaluate(lambda x: x["revenue"] - x["cost"])`: a `Table`, or a number when no dim is open. |
 | `precedents(line_item, deep=False, **coords)` / `dependents(...)` | What a cell's formula can read, and what can read the cell; see Tracing. |
@@ -192,7 +194,30 @@ model = tm.Model()
 | `to_dict()` / `tm.Model.from_dict(data, formulas="on")` | The same, as plain data. |
 
 **Source.** Every value needs a `source` dict with `document`, `url` and `section`;
-`page` and `quote` are optional. Other keys are rejected.
+`page`, `quote` and `sha256` (the document's hash, for a citation that survives a renamed file)
+are optional. Other keys are rejected.
+
+**Confidence and reasoning.** The source says where a value came from; `meta` says what the
+writer makes of it. It takes three keys, all optional:
+
+| Key | Holds |
+| --- | --- |
+| `confidence` | `"stated"` (the source says it), `"inferred"` (read between the lines) or `"assumed"` (a guess the source leaves open) |
+| `reasoning` | Why the value is what it is: the clause it was read from, what was counted, why it was guessed |
+| `origin` | Who or what wrote it, e.g. `"agent:fee-forecast-build"` or a person |
+
+```python
+model.set_value("units", {"term": "T1"}, 470, SRC,
+                meta={"confidence": "assumed", "reasoning": "units open in the agreement; 470 per the feasibility study",
+                      "origin": "agent:fee-forecast-build"})
+model.confidence("total")        # "assumed": the weakest of the entered values it rests on
+[e for e in model.inputs("total") if e.meta.get("confidence") == "assumed"]   # the assumptions behind it
+model.dependents("units", deep=True, term="T1")                              # what moves if it changes
+```
+
+An assumption is an ordinary cell, entered with `confidence="assumed"`. A new value never keeps
+the old value's meta. The values file saves it, and Excel shows it in the cell's note and on the
+Values sheet.
 
 ### Coord entries
 
