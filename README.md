@@ -182,6 +182,7 @@ model = tm.Model()
 | `precedents(line_item, deep=False, **coords)` / `dependents(...)` | What a cell's formula can read, and what can read the cell; see Tracing. |
 | `check()` | Runs every check; returns a `Report`. |
 | `transaction()` | Groups changes; see Transactions. |
+| `recording()` | Records every change as a `tm.Op`; see Recording changes. |
 | `to_jsonl(path)` / `load_jsonl(path)` | Save / load values, one JSON object per value. Loading validates like `set_value`, in one transaction: a bad row loads nothing. |
 | `to_excel(path, *, title="Model", sections=None, layout="sheet", columns=None, split_after=None, page_breaks=True)` | Writes the model as an Excel workbook; see Excel export. |
 
@@ -540,6 +541,25 @@ or through other formulas, and `check()` re-runs only the runs that read those. 
 definition (an item, a dimension, its labels) recalculates everything. The values a formula
 uses from where it was written are copied when it is added, so changing them later doesn't
 change the formula.
+
+### Recording changes
+
+Every verb that changes a model records one `tm.Op` while the model is recording: what changed
+(`kind`, e.g. `"value.set"` or `"item.remove"`), the object (`key`), and the object before and
+after (`old`, `new`) as plain data. A verb made of others records theirs first: `remove_item`
+records a `value.clear` per value, then `item.remove`. A refused verb, or a transaction that
+rolls back, records nothing.
+
+```python
+with model.recording() as ops:
+    model.set_value("rate", {"term": "T1"}, 6_000, SRC)
+tm.ops.replay(other, ops)                       # the same changes, checked by the same verbs
+for op in reversed(ops):
+    tm.ops.apply(model, tm.ops.invert(op))      # undone
+json.dumps([op.to_data() for op in ops])        # ops are plain data; tm.Op.from_data reads one back
+```
+
+Versioning stores these ops in its log.
 
 ### Dates
 

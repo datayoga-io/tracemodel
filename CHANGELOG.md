@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Recording changes:** `with model.recording() as ops:` records every change as a `tm.Op`
+  of plain data, which `tm.ops.replay` applies to another model through the same verbs and
+  `tm.ops.invert` undoes.
 - **Confidence and reasoning on a value:** `set_value(..., meta={"confidence": ..., "reasoning":
   ..., "origin": ...})`. `model.inputs(...)` lists the entered values a figure rests on and
   `model.confidence(...)` gives the weakest of theirs, so the assumptions behind a figure can be

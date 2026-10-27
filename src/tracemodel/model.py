@@ -11,7 +11,7 @@ import json
 import keyword
 import re
 import warnings
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -33,6 +33,7 @@ from .errors import (
 )
 from .expr import Cell, OutOfRange, diff
 from .formula import Formula, FormulaBase, Uncompiled, compare, env_from_data
+from .ops import Op
 from .periods import PeriodRange
 from .table import Table
 from .values import (
@@ -182,6 +183,8 @@ class Model:
         self._runs: dict[tuple[str, tuple[tuple[str, str], ...]], CheckResult] = {}  # check runs, until a read changes
         self._run_dependents: dict[tuple[str, tuple[str, ...]], set[tuple[str, tuple[tuple[str, str], ...]]]] = {}
         self._tx: Transaction | None = None
+        self._journal: list[Op] | None = None  # the ops recorded, while recording (model.recording())
+        self._quiet = 0  # > 0 while a verb runs another verb as its own detail (a check re-expanded)
 
     # == transactions =======================================================
     def transaction(self) -> Transaction:
@@ -199,6 +202,37 @@ class Model:
             raise DefinitionError("a transaction is already open; commit or roll it back first")
         self._tx = Transaction(self)
         return self._tx
+
+    @contextlib.contextmanager
+    def recording(self) -> Iterator[list[Op]]:
+        """Record every change as an Op, into the list this yields:
+
+            with model.recording() as ops:
+                model.set_value(...)
+            tm.ops.replay(other_model, ops)   # the same changes, checked the same way
+
+        A transaction that rolls back takes its ops back with it.
+        """
+        if self._journal is not None:
+            raise DefinitionError("this model is already recording")
+        self._journal = ops = []
+        try:
+            yield ops
+        finally:
+            self._journal = None
+
+    def _emit(self, kind: str, key: Any, old: Any, new: Any) -> None:
+        if self._journal is not None and not self._quiet:
+            self._journal.append(Op(kind, key, old, new))
+
+    @contextlib.contextmanager
+    def _detail(self) -> Iterator[None]:
+        """Verbs run as a detail of another verb record nothing of their own."""
+        self._quiet += 1
+        try:
+            yield
+        finally:
+            self._quiet -= 1
 
     def _changed(self, reads_changed: bool = True) -> None:
         """The definition changed: forget everything calculated. `reads_changed` False when no
@@ -313,6 +347,7 @@ class Model:
                 return old
             raise DefinitionError(f"dimension {name!r} already exists with different coords, descriptions or attrs")
         self.dimensions[name] = dim
+        self._emit("dimension.add", name, None, _dimension_data(dim))
         return dim
 
     def add_coords(self, name: str, entries: Iterable[Any] | PeriodRange) -> Dimension:
@@ -350,13 +385,15 @@ class Model:
         self.dimensions[name] = dim
         self._changed()
         try:
-            for check in checks.values():
-                if name in check.dynamic:
-                    self._reexpand(check, name)
+            with self._detail():
+                for check in checks.values():
+                    if name in check.dynamic:
+                        self._reexpand(check, name)
         except BaseException:
             self.dimensions[name], self.checks = old, checks
             self._changed()
             raise
+        self._emit("coords.add", name, _dimension_data(old), _dimension_data(dim))
         return dim
 
     def _reexpand(self, check: Check, dim: str) -> None:
@@ -373,8 +410,9 @@ class Model:
             raise DefinitionError(
                 f"can't remove dimension {name!r}: items {', '.join(users)} use it"
             )
-        del self.dimensions[name]
+        old = self.dimensions.pop(name)
         self._changed()
+        self._emit("dimension.remove", name, _dimension_data(old), None)
 
     def remove_coords(self, name: str, labels: Iterable[str]) -> Dimension:
         """Remove labels from a dimension, with the values entered at them. A time dimension
@@ -418,10 +456,12 @@ class Model:
                 self.clear_value(key[0], self._entries[key].coords)
             self.dimensions[name] = dim
             self._changed()
-            for check in list(self.checks.values()):
-                if name in check.dynamic:
-                    self._reexpand(check, name)
+            with self._detail():
+                for check in list(self.checks.values()):
+                    if name in check.dynamic:
+                        self._reexpand(check, name)
             self._recheck_all(f"can't remove {', '.join(gone)} from {name!r}")
+            self._emit("coords.remove", name, _dimension_data(old), _dimension_data(dim))
         return dim
 
     # == 2. items scaffold ==================================================
@@ -485,6 +525,7 @@ class Model:
                 del self.items[name]
             self._changed()
             raise
+        self._emit("item.add", name, None, _item_data(item, self))
         return item
 
     def set_formula(self, name: str, formula: Formula | Callable[..., Any] | str | None) -> Item:
@@ -507,6 +548,7 @@ class Model:
                 self.items[name] = old
                 self._changed()
                 raise
+        self._emit("item.update", name, _item_data(old, self), _item_data(item, self))
         return item
 
     def update_item(self, name: str, *, attrs: Mapping[str, Any] | None | _Unset = UNSET,
@@ -525,6 +567,7 @@ class Model:
             return old
         self.items[name] = item
         self._root_cells.pop(name, None)  # a cell shows the item's units
+        self._emit("item.update", name, _item_data(old, self), _item_data(item, self))
         return item
 
     def remove_item(self, name: str) -> None:
@@ -534,9 +577,10 @@ class Model:
         with self._atomic():
             for key in [k for k in self._entries if k[0] == name]:
                 self.clear_value(name, self._entries[key].coords)
-            del self.items[name]
+            old = self.items.pop(name)
             self._changed()
             self._recheck_all(f"can't remove item {name!r}")
+            self._emit("item.remove", name, _item_data(old, self), None)
 
     def _atomic(self) -> Any:
         """A change made of several: in the open transaction, else in one of its own."""
@@ -680,7 +724,11 @@ class Model:
                 f"run, x: read the label as x.coords[{formula.param!r}] and items as x['item'], e.g. "
                 f"lambda x: x['revenue'].sel({formula.param}=...) or a rollup with x.children({formula.param!r})"
             )
-        return self._install_check(Check(id, run_over, formula, description, severity, dynamic))
+        old = self.checks.get(id)
+        before = _check_data(old, self) if old is not None else None
+        check = self._install_check(Check(id, run_over, formula, description, severity, dynamic))
+        self._emit("check.set", id, before, _check_data(check, self))
+        return check
 
     def _install_check(self, check: Check) -> Check:
         """Validate a check against the model's dims and labels, then add it."""
@@ -723,9 +771,10 @@ class Model:
         """Remove a check."""
         if id not in self.checks:
             raise DefinitionError(f"no check {id!r}; checks: {', '.join(self.checks) or 'none'}")
-        del self.checks[id]
+        old = self.checks.pop(id)
         self._forget_runs(id)
         self._dependents_index = None
+        self._emit("check.remove", id, _check_data(old, self), None)
 
     def _template_or_raise(self, formula: Formula, where: str) -> Any:
         try:
@@ -938,6 +987,8 @@ class Model:
                     self._entries[key] = previous
                 self._value_changed(key)
                 raise
+        self._emit("value.set", {"item": line_item, "coords": full},
+                   None if previous is None else _value_data(previous), _value_data(self._entries[key]))
 
     def clear_value(self, line_item: str, coords: Mapping[str, str]) -> None:
         """Remove a cell's entered value, so it is not entered again (unlike tm.NIL, which says
@@ -958,6 +1009,7 @@ class Model:
                 self._entries[key] = previous
                 self._value_changed(key)
                 raise
+        self._emit("value.clear", {"item": line_item, "coords": full}, _value_data(previous), None)
 
     def get(self, line_item: str, **coords: str) -> float:
         """The cell's value; a nil cell gives 0 (its entry keeps tm.NIL), a nil date tm.NIL."""
@@ -1121,14 +1173,7 @@ class Model:
             raise DefinitionError(f"not a tracemodel definition (format {data.get('format')!r}, expected {FORMAT!r})")
         model = cls()
         for d in data["dimensions"]:
-            entries = [e if isinstance(e, str) else tuple(e) for e in d["coords"]]
-            if "time" in d:
-                spine = PeriodRange.from_data(d["time"], len(entries))
-                if list(spine.labels) != entries:
-                    raise DefinitionError(f"dimension {d['name']!r}: its coords don't match its time spine {d['time']}")
-                model.add_dimension(d["name"], spine)
-            else:
-                model.add_dimension(d["name"], Hierarchy(entries) if d.get("hierarchy") else entries)
+            model.add_dimension(d["name"], _dimension_from_data(d))
         with model.transaction():  # a formula may read an item saved after it
             for i in data["items"]:
                 formula = None
@@ -1187,10 +1232,9 @@ class Model:
         """Write one JSON object per value."""
         lines = []
         for e in self._entries.values():
-            row = e.to_json()
-            if _is_formula(e.value):  # a cell formula: its lambda's source
-                del row["value"]
-                row = {"line_item": row["line_item"], "coords": row["coords"], **e.value.to_data()} | row
+            row = {"line_item": e.item, "coords": e.coords} | _value_data(e)
+            if e.overrides_formula:
+                row["overrides_formula"] = True
             lines.append(json.dumps(row) + "\n")
         Path(path).write_text("".join(lines))  # written only once every row could be saved
 
@@ -1209,11 +1253,7 @@ class Model:
             for line in f:
                 if line.strip():
                     row = json.loads(line)
-                    if "formula" in row:
-                        where = f"{row['line_item']}{_fmt(row['coords'])}: formula"
-                        value: Any = _formula_from_data(row, "formula", where, formulas)
-                    else:
-                        value = NIL if row["value"] is None else row["value"]
+                    value = _value_from_data(row, formulas, f"{row['line_item']}{_fmt(row['coords'])}: formula")
                     self.set_value(row["line_item"], row["coords"], value, row["source"], row.get("meta"))
 
     # == display ============================================================
@@ -1507,6 +1547,7 @@ class Transaction:
     def __init__(self, model: Model):
         self._model = model
         self._saved = (dict(model.dimensions), dict(model.items), dict(model.checks), dict(model._entries))
+        self._mark = None if model._journal is None else len(model._journal)  # ops recorded before it
         self._pending: list[tuple[str, list[tuple[str, ...]] | None]] = []
         self.open = True
 
@@ -1534,6 +1575,8 @@ class Transaction:
     def _restore(self) -> None:
         m = self._model
         m.dimensions, m.items, m.checks, m._entries = (dict(x) for x in self._saved)
+        if self._mark is not None and m._journal is not None:
+            del m._journal[self._mark:]  # its ops never happened
         m._tx = None
         m._changed()
         self.open = False
@@ -1576,6 +1619,33 @@ def _entry_data(dim: Dimension, label: str) -> str | list[Any]:
     if attrs:
         return [label, description, attrs]
     return [label, description] if description is not None else label
+
+
+def _dimension_from_data(d: Mapping[str, Any]) -> Any:
+    """A saved dimension's coords: a time spine, a Hierarchy or a list of entries."""
+    entries = [e if isinstance(e, str) else tuple(e) for e in d["coords"]]
+    if "time" in d:
+        spine = PeriodRange.from_data(d["time"], len(entries))
+        if list(spine.labels) != entries:
+            raise DefinitionError(f"dimension {d['name']!r}: its coords don't match its time spine {d['time']}")
+        return spine
+    return Hierarchy(entries) if d.get("hierarchy") else entries
+
+
+def _value_data(e: Entry) -> dict[str, Any]:
+    """An entered value as plain data: the value (or a cell formula's lambda), source and meta."""
+    data: dict[str, Any] = (e.value.to_data() if _is_formula(e.value)
+                            else {"value": None if e.value is NIL else dates.to_json(e.value)})
+    data["source"] = e.source
+    if e.meta:
+        data["meta"] = e.meta
+    return data
+
+
+def _value_from_data(data: Mapping[str, Any], formulas: str = "on", where: str = "formula") -> Any:
+    if "formula" in data:
+        return _formula_from_data(data, "formula", where, formulas)
+    return NIL if data["value"] is None else data["value"]
 
 
 def _dimension_data(dim: Dimension) -> dict[str, Any]:
