@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Verbs that undo:** `remove_item`, `set_formula`, `update_item`, `remove_check`,
+  `clear_value` and `remove_coords`. Each refuses, with nothing changed, while a formula or a
+  check still reads what it would remove; in a transaction that is checked at commit.
 - **Text items:** `add_item(..., dtype=str)` (or `"str"` / `"string"`) holds sourced text, such
   as a contract's status or vendor. Text compares and joins in formulas and checks, `.str` gives
   pandas-named methods (`contains`, `lower`, `len`, ...), empty text is rejected in favour of

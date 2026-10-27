@@ -5,6 +5,7 @@ Build in order: add_dimension -> add_item -> add_check -> set_value.
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
 import keyword
@@ -26,6 +27,7 @@ from .errors import (
     DimMismatch,
     InvalidValue,
     MissingValue,
+    TraceModelError,
     UnknownCoord,
     UnknownItem,
 )
@@ -130,6 +132,17 @@ class Check:
 
 
 _NO_VALUE = object()  # a side of a check that read a missing cell (None is a value a side may have)
+_EVERYTHING = "*"  # a transaction's pending check: every formula and check, at commit
+
+
+class _Unset:
+    """An argument not given (None is a value: no description)."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET = _Unset()
 
 
 class _Defer(BaseException):  # BaseException: a formula's own `except Exception` must not swallow it
@@ -361,6 +374,54 @@ class Model:
         del self.dimensions[name]
         self._changed()
 
+    def remove_coords(self, name: str, labels: Iterable[str]) -> Dimension:
+        """Remove labels from a dimension, with the values entered at them. A time dimension
+        loses periods from its end; a hierarchy path goes with its children or not at all.
+
+        Refused, with nothing removed, while a formula or a check still reads a removed label
+        by name; a check over tm.ANY or filter_by_attrs shrinks with the dimension.
+        """
+        if name not in self.dimensions:
+            raise UnknownCoord(f"no dimension {name!r}; declared: {', '.join(self.dimensions)}")
+        old = self.dimensions[name]
+        gone = list(dict.fromkeys([labels] if isinstance(labels, str) else labels))
+        for label in gone:
+            old.require(label)
+        if not gone:
+            return old
+        keep = [c for c in old.coords if c not in gone]
+        if not keep:
+            raise DefinitionError(f"can't remove every label of {name!r}; remove the dimension instead")
+        if old.time is not None and list(old.coords[:len(keep)]) != keep:
+            raise DefinitionError(f"{name!r} is a time dimension: remove periods from its end, "
+                                  f"e.g. {list(old.coords[len(keep):])!r}")
+        if old.hierarchy is not None:
+            orphans = [c for c in keep if any(c.startswith(g + "/") for g in gone)]
+            if orphans:
+                raise DefinitionError(f"can't remove {', '.join(gone)} from {name!r}: "
+                                      f"{', '.join(orphans)} would lose a parent; remove them too")
+        listed = [c.id for c in self.checks.values()
+                  if name in c.coords and name not in c.dynamic and set(c.coords[name]) & set(gone)]
+        if listed:
+            raise DefinitionError(f"can't remove {', '.join(gone)} from {name!r}: checks {', '.join(listed)} "
+                                  "list them in coords; change or remove those checks first")
+        if old.time is not None:
+            dim = Dimension(name, PeriodRange(old.time.periods[0], len(keep)))
+        else:
+            entries = [_entry_tuple(old, c) for c in keep]
+            dim = Dimension(name, Hierarchy(entries) if old.hierarchy is not None else entries)
+        with self._atomic():
+            for key in [k for k, e in self._entries.items()
+                        if name in self.items[k[0]].dims and e.coords[name] in gone]:
+                self.clear_value(key[0], self._entries[key].coords)
+            self.dimensions[name] = dim
+            self._changed()
+            for check in list(self.checks.values()):
+                if name in check.dynamic:
+                    self._reexpand(check, name)
+            self._recheck_all(f"can't remove {', '.join(gone)} from {name!r}")
+        return dim
+
     # == 2. items scaffold ==================================================
     def add_item(
         self,
@@ -401,7 +462,8 @@ class Model:
         item = Item(name, dims, dtype, dict(attrs or {}), description=description)
         old = self.items.get(name)
         if old is not None and old != item:
-            raise DefinitionError(f"item {name!r} already exists with a different definition")
+            raise DefinitionError(f"item {name!r} already exists with a different definition; change its attrs or "
+                                  f"description with update_item, or remove_item and add it again")
         self.items[name] = old or item  # declared first, so a formula can read its own cells
         try:
             if formula is not None:
@@ -409,7 +471,8 @@ class Model:
             if old is not None:
                 if old.formula == formula:
                     return old
-                raise DefinitionError(f"item {name!r} already exists with a different formula")
+                raise DefinitionError(f"item {name!r} already exists with a different formula; "
+                                      f"change it with set_formula({name!r}, ...)")
             self.items[name] = item = Item(name, dims, dtype, dict(attrs or {}), formula, description)
             # a new item changes no other cell's reads, unless its name is also a label (x["/a"])
             self._changed(reads_changed=any(name in d for d in self.dimensions.values()))
@@ -421,6 +484,82 @@ class Model:
             self._changed()
             raise
         return item
+
+    def set_formula(self, name: str, formula: Formula | Callable[..., Any] | str | None) -> Item:
+        """Change an item's formula, or remove it with None (its cells are then entered only).
+        Values entered over the formula stay. Refused, with nothing changed, when the new
+        formula reads an unknown item or label, leaves a dim open, or makes a cell depend on
+        itself."""
+        old = self.item(name)
+        if formula is not None:
+            formula = self._as_formula(formula, f"item {name!r}: formula")
+        if formula == old.formula:
+            return old
+        item = Item(old.name, old.dims, old.dtype, dict(old.attrs), formula, old.description)  # type: ignore[arg-type]
+        self.items[name] = item
+        self._changed()
+        if formula is not None:
+            try:
+                self._check_cycles_now_or_at_commit(name, None)
+            except BaseException:
+                self.items[name] = old
+                self._changed()
+                raise
+        return item
+
+    def update_item(self, name: str, *, attrs: Mapping[str, Any] | None | _Unset = UNSET,
+                    description: str | None | _Unset = UNSET) -> Item:
+        """Change an item's attrs or description. Its dims and dtype don't change: remove_item
+        and add it again."""
+        old = self.item(name)
+        if not isinstance(attrs, _Unset) and attrs is not None and not isinstance(attrs, Mapping):
+            raise DefinitionError(f"item {name!r}: attrs must be a dict")
+        if not isinstance(description, _Unset) and description is not None and not isinstance(description, str):
+            raise DefinitionError(f"item {name!r}: description must be a string")
+        item = Item(old.name, old.dims, old.dtype,
+                    dict(old.attrs) if isinstance(attrs, _Unset) else dict(attrs or {}), old.formula,
+                    old.description if isinstance(description, _Unset) else description)
+        if item == old:
+            return old
+        self.items[name] = item
+        self._root_cells.pop(name, None)  # a cell shows the item's units
+        return item
+
+    def remove_item(self, name: str) -> None:
+        """Remove an item, with its values. Refused, with nothing removed, while a formula or
+        a check reads it."""
+        self.item(name)
+        with self._atomic():
+            for key in [k for k in self._entries if k[0] == name]:
+                self.clear_value(name, self._entries[key].coords)
+            del self.items[name]
+            self._changed()
+            self._recheck_all(f"can't remove item {name!r}")
+
+    def _atomic(self) -> Any:
+        """A change made of several: in the open transaction, else in one of its own."""
+        return contextlib.nullcontext() if self._tx is not None else self.transaction()
+
+    def _recheck_all(self, why: str) -> None:
+        """Check every formula and check again, after something they may read was removed;
+        inside a transaction, at commit."""
+        if self._tx is not None:
+            self._tx._pending.append((_EVERYTHING, why))
+            return
+        try:
+            for name, item in self.items.items():
+                if item.formula is not None:
+                    starts: list[tuple[str, ...]] = list(
+                        itertools.product(*(self.dimensions[d].coords for d in item.dims)))
+                else:
+                    starts = [k[1] for k, e in self._entries.items() if k[0] == name and _is_formula(e.value)]
+                if starts:
+                    self._check_reads(name, starts)
+                    self._check_cycles(name, starts)
+            for check in list(self.checks.values()):
+                self._install_check(check)
+        except TraceModelError as e:
+            raise DefinitionError(f"{why}: {e}") from None
 
     def _as_formula(self, value: Any, what: str) -> FormulaBase:
         """A lambda, its source text or a Formula as a Formula; an expression built from
@@ -577,6 +716,14 @@ class Model:
         self._forget_runs(id)
         self._dependents_index = None
         return check
+
+    def remove_check(self, id: str) -> None:
+        """Remove a check."""
+        if id not in self.checks:
+            raise DefinitionError(f"no check {id!r}; checks: {', '.join(self.checks) or 'none'}")
+        del self.checks[id]
+        self._forget_runs(id)
+        self._dependents_index = None
 
     def _template_or_raise(self, formula: Formula, where: str) -> Any:
         try:
@@ -781,6 +928,26 @@ class Model:
                     del self._entries[key]
                 else:
                     self._entries[key] = previous
+                self._value_changed(key)
+                raise
+
+    def clear_value(self, line_item: str, coords: Mapping[str, str]) -> None:
+        """Remove a cell's entered value, so it is not entered again (unlike tm.NIL, which says
+        the source shows nothing). On a formula item the item's formula calculates it again."""
+        key, full = self._key(line_item, coords)
+        previous = self._entries.get(key)
+        if previous is None:
+            raise MissingValue(f"{line_item}{_fmt(full)} has no value to clear")
+        del self._entries[key]
+        self._value_changed(key)
+        if _is_formula(previous.value) or self.items[line_item].formula is not None:
+            self._dependents_index = None
+            self._acyclic.clear()  # this cell now reads what the item's formula reads
+        if self.items[line_item].formula is not None:
+            try:
+                self._check_cycles_now_or_at_commit(line_item, [key[1]])
+            except BaseException:
+                self._entries[key] = previous
                 self._value_changed(key)
                 raise
 
@@ -1296,7 +1463,9 @@ class Transaction:
         model._tx = None  # checks below run as they would outside a transaction
         try:
             for name, starts in pending:
-                if name in model.items:
+                if name == _EVERYTHING:
+                    model._recheck_all(starts)  # type: ignore[arg-type]  # starts: why
+                elif name in model.items:
                     model._check_cycles_now_or_at_commit(name, starts)
         except BaseException:
             self._restore()
