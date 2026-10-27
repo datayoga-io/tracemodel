@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Branches:** `repo.new_branch`, `checkout`, `branches`, `drop_branch`, and
+  `repo.rebase(branch, onto)`, which lands a branch's changes on another as one commit, checked
+  by the model's verbs, or refuses naming every object both sides changed differently
+  (`repo.conflicts`). History stays a line. `repo.at` takes a branch name.
 - **Versions:** `tm.Repo.open(path, author)` keeps a model under version control in an
   append-only log. `repo.model` is the branch's model; `repo.commit(message)` writes its pending
   changes as one commit, `repo.discard()` drops them. `repo.log()`, `repo.at(commit)` (the model
