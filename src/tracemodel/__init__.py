@@ -28,6 +28,7 @@ from .formula import Formula
 from .model import ANY, Check, Item, Model, filter_by_attrs
 from .ops import Op
 from .periods import Period, PeriodRange, period_range
+from .repo import CommitInfo, Repo, Version
 from .table import Table
 from .values import NIL, Entry, Report, Trace
 
@@ -51,6 +52,7 @@ __all__ = [
     "ANY",
     "NIL",
     "Check",
+    "CommitInfo",
     "DefinitionError",
     "DimMismatch",
     "Dimension",
@@ -64,12 +66,14 @@ __all__ = [
     "Op",
     "Period",
     "PeriodRange",
+    "Repo",
     "Report",
     "Table",
     "Trace",
     "TraceModelError",
     "UnknownCoord",
     "UnknownItem",
+    "Version",
     "filter_by_attrs",
     "load",
     "ops",
