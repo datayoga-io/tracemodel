@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Recording changes:** `with model.recording() as ops:` records every change as a `tm.Op`
+  of plain data, which `tm.ops.replay` applies to another model through the same verbs and
+  `tm.ops.invert` undoes.
 - **Verbs that undo:** `remove_item`, `set_formula`, `update_item`, `remove_check`,
   `clear_value` and `remove_coords`. Each refuses, with nothing changed, while a formula or a
   check still reads what it would remove; in a transaction that is checked at commit.

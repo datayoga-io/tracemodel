@@ -13,6 +13,7 @@ Build a model in four steps, in order:
 import json
 from pathlib import Path
 
+from . import ops
 from .dimensions import Dimension, Hierarchy
 from .errors import (
     DefinitionError,
@@ -25,6 +26,7 @@ from .errors import (
 )
 from .formula import Formula
 from .model import ANY, Check, Item, Model, filter_by_attrs
+from .ops import Op
 from .periods import Period, PeriodRange, period_range
 from .table import Table
 from .values import NIL, Entry, Report, Trace
@@ -59,6 +61,7 @@ __all__ = [
     "Item",
     "MissingValue",
     "Model",
+    "Op",
     "Period",
     "PeriodRange",
     "Report",
@@ -69,5 +72,6 @@ __all__ = [
     "UnknownItem",
     "filter_by_attrs",
     "load",
+    "ops",
     "period_range",
 ]
