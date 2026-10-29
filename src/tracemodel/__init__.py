@@ -13,7 +13,7 @@ Build a model in four steps, in order:
 import json
 from pathlib import Path
 
-from . import ops
+from . import ops, review
 from .diff import Diff, diff
 from .dimensions import Dimension, Hierarchy
 from .errors import (
@@ -30,7 +30,7 @@ from .log import LogError, StaleRef, TornLog
 from .model import ANY, Check, Item, Model, filter_by_attrs
 from .ops import Op
 from .periods import Period, PeriodRange, period_range
-from .repo import CommitInfo, Conflict, Conflicted, Rebased, Repo, Version
+from .repo import Approved, CommitInfo, Conflict, Conflicted, Rebased, Repo, Version
 from .table import Table
 from .values import NIL, Entry, Report, Trace
 
@@ -53,6 +53,7 @@ def load(path: str | Path, allow_code: bool | None = None, formulas: str = "on")
 __all__ = [
     "ANY",
     "NIL",
+    "Approved",
     "Check",
     "CommitInfo",
     "Conflict",
@@ -88,4 +89,5 @@ __all__ = [
     "load",
     "ops",
     "period_range",
+    "review",
 ]

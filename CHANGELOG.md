@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Review:** an agent drafts on a branch (a repo opened with `self_approve=False`); a person
+  reads it with `repo.review(branch)` (each change with its author, and the
+  calculated cells it moves), changes it on the branch, rules with `repo.accept` / `reject` /
+  `comment` on a cell, a slice, an item, a commit or all of it, and lands what was accepted with
+  `repo.approve(branch)`, which re-runs the checks. Nobody approves their own changes;
+  `repo.approved_by(...)` says who let a value in.
 - **Diff:** `repo.diff(a, b, calculated=True)` and `tm.diff(model_a, model_b)` list the
   definitions and entered values that differ, and the calculated cells that moved, each naming
   the differing inputs and formulas it rests on.
