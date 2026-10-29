@@ -6,6 +6,7 @@ Build in order: add_dimension -> add_item -> add_check -> set_value.
 from __future__ import annotations
 
 import contextlib
+import functools
 import itertools
 import json
 import keyword
@@ -136,6 +137,16 @@ _NO_VALUE = object()  # a side of a check that read a missing cell (None is a va
 _EVERYTHING = "*"  # a transaction's pending check: every formula and check, at commit
 
 
+def _writes(verb: Callable[..., Any]) -> Callable[..., Any]:
+    """A verb that changes the model: refused on a read-only one (a repo's model at a commit)."""
+    @functools.wraps(verb)
+    def checked(self: Model, *args: Any, **kwargs: Any) -> Any:
+        if self._readonly:
+            raise DefinitionError(f"this model is read-only: {self._readonly}")
+        return verb(self, *args, **kwargs)
+    return checked
+
+
 class _Unset:
     """An argument not given (None is a value: no description)."""
 
@@ -183,8 +194,10 @@ class Model:
         self._tx: Transaction | None = None
         self._journal: list[Op] | None = None  # the ops recorded, while recording (model.recording())
         self._quiet = 0  # > 0 while a verb runs another verb as its own detail (a check re-expanded)
+        self._readonly: str | None = None  # why it can't change, e.g. "it is the model at commit 3fa2c1d0"
 
     # == transactions =======================================================
+    @_writes
     def transaction(self) -> Transaction:
         """Group changes: checks that need the whole picture (circular formulas) run once, at
         commit, and any failure undoes every change made in the transaction.
@@ -336,6 +349,7 @@ class Model:
             _reraise_with(e, where() if callable(where) else where)
 
     # == 1. dimensions ======================================================
+    @_writes
     def add_dimension(self, name: str, coords: Iterable[str] | Hierarchy) -> Dimension:
         """Add a dimension. Re-adding the same definition (e.g. a re-run cell) is a no-op."""
         dim = Dimension(name, coords)
@@ -348,6 +362,7 @@ class Model:
         self._emit("dimension.add", name, None, _dimension_data(dim))
         return dim
 
+    @_writes
     def add_coords(self, name: str, entries: Iterable[Any] | PeriodRange) -> Dimension:
         """Append labels to a dimension, e.g. forecast periods. A time dimension takes the
         periods that continue it: add_coords("month", tm.period_range("2027-01", periods=12)).
@@ -399,6 +414,7 @@ class Model:
         coords = {d: check.dynamic.get(d, labels) for d, labels in check.coords.items()}
         self.add_check(check.id, check.expect, coords, check.description, check.severity)
 
+    @_writes
     def remove_dimension(self, name: str) -> None:
         """Remove a dimension that no item uses (so it has no cells, values or checks)."""
         if name not in self.dimensions:
@@ -412,6 +428,7 @@ class Model:
         self._changed()
         self._emit("dimension.remove", name, _dimension_data(old), None)
 
+    @_writes
     def remove_coords(self, name: str, labels: Iterable[str]) -> Dimension:
         """Remove labels from a dimension, with the values entered at them. A time dimension
         loses periods from its end; a hierarchy path goes with its children or not at all.
@@ -463,6 +480,7 @@ class Model:
         return dim
 
     # == 2. items scaffold ==================================================
+    @_writes
     def add_item(
         self,
         name: str,
@@ -526,6 +544,7 @@ class Model:
         self._emit("item.add", name, None, _item_data(item, self))
         return item
 
+    @_writes
     def set_formula(self, name: str, formula: Formula | Callable[..., Any] | str | None) -> Item:
         """Change an item's formula, or remove it with None (its cells are then entered only).
         Values entered over the formula stay. Refused, with nothing changed, when the new
@@ -549,6 +568,7 @@ class Model:
         self._emit("item.update", name, _item_data(old, self), _item_data(item, self))
         return item
 
+    @_writes
     def update_item(self, name: str, *, attrs: Mapping[str, Any] | None | _Unset = UNSET,
                     description: str | None | _Unset = UNSET) -> Item:
         """Change an item's attrs or description. Its dims and dtype don't change: remove_item
@@ -568,6 +588,7 @@ class Model:
         self._emit("item.update", name, _item_data(old, self), _item_data(item, self))
         return item
 
+    @_writes
     def remove_item(self, name: str) -> None:
         """Remove an item, with its values. Refused, with nothing removed, while a formula or
         a check reads it."""
@@ -683,6 +704,7 @@ class Model:
         return cell
 
     # == 3. data quality ====================================================
+    @_writes
     def add_check(
         self,
         id: str,
@@ -765,6 +787,7 @@ class Model:
         self._dependents_index = None
         return check
 
+    @_writes
     def remove_check(self, id: str) -> None:
         """Remove a check."""
         if id not in self.checks:
@@ -938,6 +961,7 @@ class Model:
                     self._reads([dep], dep_at, reads)
 
     # == 4. values ==========================================================
+    @_writes
     def set_value(
         self, line_item: str, coords: Mapping[str, str], value: float, source: Mapping[str, Any]
     ) -> None:
@@ -982,6 +1006,7 @@ class Model:
         self._emit("value.set", {"item": line_item, "coords": full},
                    None if previous is None else _value_data(previous), _value_data(self._entries[key]))
 
+    @_writes
     def clear_value(self, line_item: str, coords: Mapping[str, str]) -> None:
         """Remove a cell's entered value, so it is not entered again (unlike tm.NIL, which says
         the source shows nothing). On a formula item the item's formula calculates it again."""
