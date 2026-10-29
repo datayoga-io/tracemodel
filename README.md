@@ -806,6 +806,7 @@ repo.export("m.json", "m.values.jsonl")        # the head as tracemodel's files,
 | `repo.drop_branch(name)` | Deletes a branch; its commits stay in the log. |
 | `repo.rebase(branch, onto="main", *, message=None, check=False)` | Lands a branch's changes on `onto` as one commit; see Branches. |
 | `repo.conflicts(branch, onto="main")` | The objects both sides changed differently since the branch point, as `tm.Conflict` (`target`, `base`, `ours`, `theirs`). |
+| `repo.diff(a, b=None, *, calculated=False)` | What differs from commit or branch `a` to `b` (default: the working model, with its pending changes); see Diff. |
 | `repo.export(definition, values=None, at=None)` | Writes the head, or the commit `at`, as `model.save` and `model.to_jsonl` do. A repo has no `save`: every commit is written to its log. |
 
 ### Branches
@@ -838,7 +839,24 @@ It is refused, with nothing written:
 - when a change no longer applies, e.g. it reads an item `onto` removed;
 - with `check=True`, when a check run fails on the result that didn't fail on `onto`.
 
-A what-if that is never rebased is a scenario; compare it with `repo.at(...)`.
+A what-if that is never rebased is a scenario; compare it with `repo.diff`.
+
+### Diff
+
+```python
+repo.diff("main", "high-qty", calculated=True).show()
+# object                    change   before  after  because
+# value:qty[term=T1]        changed      40     60
+# calc:revenue[term=T1]     changed     400    600  value:qty[term=T1]
+# calc:total[]              changed     500    700  value:qty[term=T1]
+```
+
+`repo.diff(a, b)` (or `tm.diff(model_a, model_b)`) lists each object that differs, as
+changes (`target`, `change`: added, removed or changed, `before`, `after`):
+dimensions, items and checks first, then entered values.
+With `calculated=True` it adds every calculated cell whose value differs (`calc:...`), and
+`because` names the differing entered values and formulas it rests on, so each moved figure
+says which input moved it. `diff.of("calc")` picks one kind; `diff.table()` is a `Table`.
 
 **The log.** A repo keeps one file, `log.ndjson`: one record per line, each a checksum and its
 JSON. A change holds one op; a commit lists its changes and names the commit before it; a branch
