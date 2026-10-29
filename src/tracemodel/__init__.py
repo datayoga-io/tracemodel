@@ -25,10 +25,11 @@ from .errors import (
     UnknownItem,
 )
 from .formula import Formula
+from .log import LogError, StaleRef, TornLog
 from .model import ANY, Check, Item, Model, filter_by_attrs
 from .ops import Op
 from .periods import Period, PeriodRange, period_range
-from .repo import CommitInfo, Repo, Version
+from .repo import CommitInfo, Conflict, Conflicted, Rebased, Repo, Version
 from .table import Table
 from .values import NIL, Entry, Report, Trace
 
@@ -53,6 +54,8 @@ __all__ = [
     "NIL",
     "Check",
     "CommitInfo",
+    "Conflict",
+    "Conflicted",
     "DefinitionError",
     "DimMismatch",
     "Dimension",
@@ -61,14 +64,18 @@ __all__ = [
     "Hierarchy",
     "InvalidValue",
     "Item",
+    "LogError",
     "MissingValue",
     "Model",
     "Op",
     "Period",
     "PeriodRange",
+    "Rebased",
     "Repo",
     "Report",
+    "StaleRef",
     "Table",
+    "TornLog",
     "Trace",
     "TraceModelError",
     "UnknownCoord",

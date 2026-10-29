@@ -117,6 +117,33 @@ def apply(model: Model, op: Op) -> None:
         raise ValueError(f"unknown op kind {kind!r}")
 
 
+def state(model: Model, op: Op) -> Any:
+    """The object `op` changes, as it stands in `model`, in the shape of `op.new`: None when the
+    model doesn't have it."""
+    from .model import _check_data, _dimension_data, _item_data, _value_data
+
+    kind = op.kind.split(".")[0]
+    if kind in ("dimension", "coords"):
+        dim = model.dimensions.get(op.key)
+        return None if dim is None else _dimension_data(dim)
+    if kind == "item":
+        item = model.items.get(op.key)
+        return None if item is None else _item_data(item, model)
+    if kind == "check":
+        check = model.checks.get(op.key)
+        return None if check is None else _check_data(check, model)
+    item = model.items.get(op.key["item"])
+    if item is None:
+        return None
+    entry = model._entries.get((item.name, tuple(op.key["coords"].get(d) for d in item.dims)))
+    return None if entry is None else _value_data(entry)
+
+
+def same(a: Any, b: Any) -> bool:
+    """Two objects' states are the same, compared as plain data."""
+    return canonical(a) == canonical(b)
+
+
 def replay(model: Model, ops: list[Op]) -> Model:
     """Apply `ops` in order, in one transaction: all of them, or none."""
     with model.transaction():
