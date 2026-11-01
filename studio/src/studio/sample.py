@@ -40,6 +40,9 @@ ENTERED: list[tuple[str, tuple[str, ...], Any, str, str]] = [
     ("project_name", ("project",), "str", "", "The project's name"),
     ("project_location", ("project",), "str", "", "Where the project is"),
     ("project_number", ("project",), "str", "", "The project's number"),
+    ("vat_rate", (), "float", "percent", "VAT on sales, one rate for the whole model"),
+    ("site_area", ("project",), "float", "sqm", "The plot the project is built on"),
+    ("fit_out_cost", ("unit_type",), "float", "thousands per sqm", "Fit-out cost per square metre, the same in every project"),
     ("unit_count", ("project", "unit_type"), "int", "units", "Units of a type in the project"),
     ("area_per_unit", ("project", "unit_type"), "float", "sqm", "Floor area of one unit"),
     ("price_per_sqm", ("project", "unit_type"), "float", "thousands per sqm", "Sale price per square metre"),
@@ -114,6 +117,9 @@ CHECKS: list[tuple[str, Callable[..., Any], str, str]] = [
 # Where each entered item's numbers come from: (document, section, url).
 SOURCES: dict[str, tuple[str, str, str]] = {
     "project": ("Project file", "Cover sheet", "https://example.com/project-file.pdf"),
+    "vat_rate": ("Tax ruling", "Section 2", "https://example.com/tax-ruling.pdf"),
+    "site_area": ("Planning approval", "Table 1", "https://example.com/planning-approval.pdf"),
+    "fit_out_cost": ("Pricing sheet", "Fit-out rates", "https://example.com/pricing-sheet-r2.xlsx"),
     "unit_count": ("Sales brief", "Unit mix", "https://example.com/sales-brief.pdf"),
     "area_per_unit": ("Planning approval", "Table 3", "https://example.com/planning-approval.pdf"),
     "price_per_sqm": ("Pricing sheet", "Revision 2", "https://example.com/pricing-sheet-r2.xlsx"),
@@ -176,6 +182,11 @@ def _commits() -> Iterator[tuple[str, str, Callable[[tm.Model], None]]]:
             set_(m, "project_name", {"project": p}, name)
             set_(m, "project_location", {"project": p}, location)
             set_(m, "project_number", {"project": p}, number)
+        set_(m, "vat_rate", {}, 17)
+        set_(m, "site_area", {"project": "PA"}, 5000)   # PB's is not known yet
+        for unit_type, cost in zip(UNIT_USE, (1.0, 1.2, 1.2, 0.9)):
+            set_(m, "fit_out_cost", {"unit_type": unit_type}, cost)
+        m.set_value("fit_out_cost", {"unit_type": list(UNIT_USE)[4]}, tm.NIL, _source("fit_out_cost"))
 
     def programme_rev0(m: tm.Model) -> None:
         set_(m, "milestone_date", {"project": "PA", "milestone": "Handover"}, "2026-09-30", "Programme rev 0")
@@ -263,8 +274,7 @@ DIMENSIONS_PROJECTS = [c for c, _, _ in DIMENSIONS["project"]]
 # Views for the grid. A model table holds the items that share their dimensions, so it comes from the model;
 # a saved view is a layout over items from the tables, and holds no data of its own.
 TABLES = [
-    {"id": "projects", "title": "Projects", "rows": ["project"]},
-    {"id": "quantities", "title": "Project quantities", "rows": ["project", "unit_type"]},
+    {"id": "quantities", "title": "Project quantities", "rows": ["project", "unit_type"], "levels": True},
     {"id": "milestones", "title": "Milestones", "rows": ["project", "milestone"]},
     {"id": "contracts", "title": "Contracts", "rows": ["contract"]},
     {"id": "engagements", "title": "Engagements", "rows": ["engagement"]},

@@ -281,3 +281,24 @@ details.assume ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-dir
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .btn.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.add-inline { display: inline-flex; align-items: center; gap: 6px; font-style: normal; }
+.add-inline input, .add-inline select { font: inherit; font-size: 13px; color: var(--ink); background: var(--bg); border: 1px solid var(--accent); border-radius: 4px; padding: 2px 6px; }
+.add-inline .add-code { width: 64px; }
+.add-inline .add-name { width: 140px; }
+.add-hint { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+/* ---- levels: shaded cells where a quantity does not apply, repeated ones in italics, the detail toggle ---- */
+.tabulator-cell.t-blank { background: var(--na, rgba(128, 140, 134, .14)); }
+.tabulator-cell.t-rep { color: var(--muted); font-style: italic; }
+.tabulator .tabulator-header .tabulator-col .per { display: block; font-size: 10.5px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.seg { display: inline-flex; align-items: center; gap: 0; margin-left: 12px; }
+.seg-l { font-size: 12px; color: var(--muted); margin-right: 6px; }
+.seg-b { font: inherit; font-size: 12.5px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); padding: 2px 10px; cursor: pointer; }
+.seg-b:first-of-type { border-radius: 5px 0 0 5px; } .seg-b:last-of-type { border-radius: 0 5px 5px 0; } .seg-b + .seg-b { border-left: 0; }
+.seg-b[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink, #fff); font-weight: 600; }
+.add-per { display: inline-flex; gap: 8px; align-items: center; font-size: 12px; }
+.add-per label { display: inline-flex; gap: 3px; align-items: center; }
+.add-inline { flex-wrap: wrap; }
+
+.add-inline, .add-inline * { text-transform: none; letter-spacing: 0; font-weight: 400; }
