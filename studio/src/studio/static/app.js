@@ -49,15 +49,17 @@ function buildRelations() {
 function buildSections(def) {
   SECTIONS = []; GROUPS = {}; DEFAULT_ROWS = {};
   def.tables.forEach(function (t) {
+    // A levels table holds every item whose dimensions are some of its rows': one for the model, one per project, one per project and unit type.
     var items = Object.keys(ITEMS).filter(function (n) {
       var d = ITEMS[n].dims;
+      if (t.levels) return d.every(function (x) { return t.rows.indexOf(x) >= 0; });
       return d.length === t.rows.length && t.rows.every(function (x) { return d.indexOf(x) >= 0; });
     });
-    if (items.length) SECTIONS.push({ kind: 'model', title: t.title, group: t.id, only: true, rows: t.rows, items: items });
+    if (items.length) SECTIONS.push({ kind: 'model', title: t.title, group: t.id, only: true, rows: t.rows, items: items, levels: !!t.levels });
   });
   def.views.forEach(function (v) { SECTIONS.push({ kind: 'view', title: v.title, group: v.id, items: v.items, preset: v.preset }); });
   SECTIONS.forEach(function (sec) {
-    GROUPS[sec.group] = { title: sec.title, kind: sec.kind, items: sec.items, dims: ITEMS[sec.items[0]].dims, only: !!sec.only, preset: sec.preset || null };
+    GROUPS[sec.group] = { title: sec.title, kind: sec.kind, items: sec.items, dims: sec.levels ? sec.rows : ITEMS[sec.items[0]].dims, only: !!sec.only, preset: sec.preset || null, levels: !!sec.levels };
     DEFAULT_ROWS['group:' + sec.group] = sec.rows || (sec.preset && sec.preset.rows);
   });
 }
@@ -336,7 +338,7 @@ function layoutFor(id) {
     else cols = [];
     var rows = (pre.rows || DEFAULT_ROWS[id] || d).filter(function (x) { return cols.indexOf(x) < 0; });
     var dz = pre.dense || {};
-    layouts[id] = { columns: cols, rows: rows, pick: {}, dense: { rows: !!dz.rows, columns: !!dz.columns },
+    layouts[id] = { columns: cols, rows: rows, pick: {}, detail: null, dense: { rows: !!dz.rows, columns: !!dz.columns },
       unused: availDims(id).filter(function (x) { return cols.indexOf(x) < 0 && rows.indexOf(x) < 0; }) };
   }
   return layouts[id];
@@ -420,7 +422,7 @@ function renderItems() {
   [['model', 'Model', 'The data: items on dimensions'], ['view', 'Views', 'Saved layouts over model items']].forEach(function (k) {
     var html = '<div class="sec">' + k[1] + '</div><div class="sechint">' + k[2] + '</div>';
     SECTIONS.filter(function (sec) { return sec.kind === k[0]; }).forEach(function (sec) {
-      var id = viewIdOf(sec), dims = ITEMS[sec.items[0]].dims.join(' · ');
+      var id = viewIdOf(sec), dims = (sec.levels ? sec.rows : ITEMS[sec.items[0]].dims).join(' · ') + (sec.levels ? ' · and above' : '');
       var bad = CHECKS.some(function (c) { return c.cells().some(function (x) { return sec.items.indexOf(x.item) >= 0; }); });
       var ds = sec.kind === 'view'
         ? sec.items.length + (sec.items.length === 1 ? ' item' : ' items') + ' from ' + sourcesOf(sec)
@@ -448,6 +450,12 @@ function renderBar() {
   if (fd.length) html += '<span class="fsum">' + FILTER_ICON + ' Filtered: ' + fd.map(function (d) { return esc(dimName(d)) + ' (' + L.pick[d].length + ' of ' + fullMembers(d).length + ')'; }).join(', ') + '</span>';
   var dn = ['rows', 'columns'].filter(function (w) { return L.dense[w]; });
   if (dn.length) html += '<span class="densenote">Defined ' + dn.join(' and ') + ' only</span>';
+  if (levelsOn(gk, L) && L.rows.length) {
+    var det = detailOf(gk, L), lo = hasModelLevel(gk) ? 0 : 1;
+    html += '<span class="seg" role="group" aria-label="Level of detail"><span class="seg-l">Detail</span>';
+    for (var k = lo; k <= L.rows.length; k++) html += '<button type="button" class="seg-b" data-detail="' + k + '" aria-pressed="' + (k === det) + '">' + esc(k === 0 ? 'Model' : dimName(L.rows[k - 1])) + '</button>';
+    html += '</span>';
+  }
   html += '</span><span class="sp"></span><button class="link" type="button" data-expandall="1">Expand all</button><button class="link" type="button" data-collapseall="1">Collapse all</button>';
   document.getElementById('controls').innerHTML = html;
 }
@@ -562,11 +570,12 @@ function eachRow(R, base, isCollapsed, emit, dense) {
 // this turns them into Tabulator's tree of rows and nested column groups. ----
 var table = null, gridSig = '', gridVersion = 0, treeState = {}, selCell = null;
 var lastCols = null;
+var adding = null;   // a row or column being added in the grid: {row: {dim, ctx}} or {col: dims}
 
 function bumpGrid() { gridVersion++; }
 function layoutSig() {
   var L = layoutFor(current);
-  return JSON.stringify([current, gridVersion, HEAD, L.columns, L.rows, L.unused, L.pick, L.dense]);
+  return JSON.stringify([current, gridVersion, adding, HEAD, L.detail, L.columns, L.rows, L.unused, L.pick, L.dense]);
 }
 
 // The meta of a leaf cell in a row: which item and coordinates it shows, or null for a blank or a group row.
@@ -600,33 +609,60 @@ function cellEditor(cell, onRendered, success, cancel) {
 
 function cellFormatter(cell) {
   var m = metaOf(cell), el = cell.getElement();
-  ['t-entered', 't-calc', 't-fail', 't-pend', 't-sel', 't-blank'].forEach(function (c) { el.classList.remove(c); });
-  if (!m) { if (!cell.getData()._group) el.classList.add('t-blank'); return ''; }
+  ['t-entered', 't-calc', 't-fail', 't-pend', 't-sel', 't-blank', 't-rep'].forEach(function (c) { el.classList.remove(c); });
+  if (!m) { if (!cell.getData()._group || cell.getData()._lv) el.classList.add('t-blank'); return ''; }
   var it = ITEMS[m.item];
   el.classList.add(it.kind === 'calc' ? 't-calc' : 't-entered');
+  if (m.rep) el.classList.add('t-rep');
   if (failing(m.item, m.coords)) el.classList.add('t-fail');
   if (isPending(m.item, m.coords)) el.classList.add('t-pend');
   if (sel && sel.item === m.item && sameCoords(sel.coords, m.coords)) { el.classList.add('t-sel'); selCell = cell; }
   return fmt(m.item, get(m.item, m.coords), it.kind === 'entered' ? entered(m.item, m.coords) : null);
 }
 
+// ---- Levels: one grid whose rows are the model, each project, each unit type under it. A quantity sits on the row
+// of its own level; where it can't apply the cell is shaded; one that varies by the deepest dimension only is repeated. ----
+function levelsOn(g, L) { return !!g.levels && L.columns.length === 1 && L.columns[0] === IT; }
+function hasModelLevel(g) { return g.items.some(function (i) { return ITEMS[i].dims.length === 0; }); }
+function detailOf(g, L) {
+  var lo = hasModelLevel(g) ? 0 : 1, n = L.detail == null ? L.rows.length : L.detail;
+  return Math.max(lo, Math.min(L.rows.length, n));
+}
+function shownDims(g, L) { return L.rows.slice(0, detailOf(g, L)); }
+// Is the item's column shown at this level of detail? Only if every dimension it varies by is a row level shown.
+function itemShown(g, L, item) { var R = shownDims(g, L); return ITEMS[item].dims.every(function (d) { return R.indexOf(d) >= 0; }); }
+// What a row shows for an item: its own value, a repeat of it, or nothing.
+function levelCell(item, partial) {
+  var D = ITEMS[item].dims, S = Object.keys(partial), last = S[S.length - 1];
+  if (!D.every(function (d) { return d in partial; })) return null;
+  if (D.length === S.length) return { item: item, coords: pick(item, partial) };
+  if (last && D.indexOf(last) >= 0) return { item: item, coords: pick(item, partial), rep: true };
+  return null;
+}
+
 function treeRows(g, L, fixed, leaves) {
-  var roots = [], stack = [], n = 0;
+  var roots = [], stack = [], n = 0, lv = levelsOn(g, L), R = lv ? shownDims(g, L) : L.rows;
   function cellsOf(partial, isGroup) {
-    var o = { _group: isGroup };
+    var o = { _group: isGroup, _lv: lv };
     leaves.forEach(function (lf, i) {
       var co = Object.assign({}, fixed, partial, lf.coords), item = co[IT] || (g.items.length === 1 ? g.items[0] : null);
       co = strip(co);
-      o['m' + i] = (!isGroup && item && isLeafCell(item, co) && fits(co)) ? { item: item, coords: pick(item, co) } : null;
+      if (lv) o['m' + i] = item ? levelCell(item, partial) : null;
+      else o['m' + i] = (!isGroup && item && isLeafCell(item, co) && fits(co)) ? { item: item, coords: pick(item, co) } : null;
       o['c' + i] = '';
     });
     return o;
   }
-  if (!L.rows.length) roots.push(Object.assign({ id: ++n, label: g.title, tag: '' }, cellsOf({}, false)));
-  eachRow(L.rows, fixed, function () { return false; }, function (r) {
-    var dim = lastKey(r.partial), di = L.rows.indexOf(dim);
+  var modelRow = null;
+  if (lv && hasModelLevel(g)) {
+    modelRow = Object.assign({ id: ++n, label: 'Model', tag: 'model', _k: 'model', _partial: {}, _dim: null, _childDim: R[0] || null }, cellsOf({}, true));
+    roots.push(modelRow); stack.push({ depth: -1, row: modelRow });
+  }
+  if (!R.length && !modelRow) roots.push(Object.assign({ id: ++n, label: g.title, tag: '' }, cellsOf({}, false)));
+  eachRow(R, fixed, function () { return false; }, function (r) {
+    var dim = lastKey(r.partial), di = R.indexOf(dim);
     var row = Object.assign({ id: ++n, label: r.label, extra: r.extra, tag: r.tag, _k: r.key, _partial: r.partial, _dim: dim,
-      _childDim: r.group ? L.rows[di + 1] : null }, cellsOf(r.partial, r.group));
+      _childDim: r.group ? R[di + 1] : null }, cellsOf(r.partial, r.group));
     while (stack.length && stack[stack.length - 1].depth >= r.depth) stack.pop();
     var parent = stack.length ? stack[stack.length - 1].row : null;
     if (parent) (parent._children = parent._children || []).push(row); else roots.push(row);
@@ -643,7 +679,7 @@ function treeRows(g, L, fixed, leaves) {
   }
   if (roots.length) {
     ghosts(roots);
-    if (L.rows.length && isRealDim(L.rows[0])) roots.push({ id: ++n, label: '', _ghost: true, _dim: L.rows[0], _ctx: {} });
+    if (R.length && isRealDim(R[0]) && !modelRow) roots.push({ id: ++n, label: '', _ghost: true, _dim: R[0], _ctx: {} });
   }
   return roots;
 }
@@ -668,6 +704,7 @@ function columnDefs(g, L, cols) {
     title: corner, field: 'label', frozen: true, width: 300, headerSort: false, editable: false,
     formatter: function (cell) {
       var d = cell.getData();
+      if (d._ghost && isAddingRow(d)) return addRowHtml(d);
       if (d._ghost) return '<span class="ghost-link">+ Add ' + esc(d._dim) + (Object.keys(d._ctx).length ? ' to ' + esc(d._ctx[lastKey(d._ctx)]) : '') + '</span>';
       return esc(d.label) + (d.extra || '') + (d.tag ? '<span class="lvl">' + esc(d.tag) + '</span>' : '');
     }
@@ -676,14 +713,15 @@ function columnDefs(g, L, cols) {
     return { title: title, field: 'c' + i, hozAlign: 'right', headerSort: false, headerHozAlign: 'right', minWidth: 90,
       formatter: cellFormatter, formatterParams: {}, editor: cellEditor, _what: what,
       headerMenu: function (e, column) { return columnMenu(column.getDefinition()._what, g); },
-      editable: function (cell) { var m = metaOf(cell); return !!m && ITEMS[m.item].kind === 'entered'; } };
+      editable: function (cell) { var m = metaOf(cell); return !!m && !m.rep && ITEMS[m.item].kind === 'entered'; } };
   }
   var top = [];
   cols.leaves.forEach(function (lf, i) {
     var path = L.columns.map(function (d) { return lf.coords[d]; }), level = top;
     if (!path.length) { level.push(leafDef(i, g.items.length === 1 ? g.items[0] : 'Value', g.items.length === 1 ? { item: g.items[0] } : null)); return; }
     path.forEach(function (c, depth) {
-      var d = L.columns[depth], title = memberLabel(d, c) + (d === IT && ITEMS[c].kind === 'calc' ? ' <span class="kind calc">calc</span>' : '');
+      var d = L.columns[depth], title = memberLabel(d, c) + (d === IT && ITEMS[c].kind === 'calc' ? ' <span class="kind calc">calc</span>' : '') +
+        (d === IT && levelsOn(g, L) ? '<small class="per">' + (ITEMS[c].dims.length ? 'per ' + ITEMS[c].dims.join(', ') : 'per model') + '</small>' : '');
       if (depth === path.length - 1) {
         var what = d === IT ? { item: c } : (g.items.length === 1 && !isRealDim(d) ? { item: g.items[0] } : (isRealDim(d) ? { dim: d, member: c } : null));
         level.push(leafDef(i, title, what)); return;
@@ -694,9 +732,10 @@ function columnDefs(g, L, cols) {
     });
   });
   // a model table ends with a "+": a new column is a new item on its dimensions
-  var plus = g.kind === 'model' ? [{ title: '+', field: 'plus', width: 48, headerSort: false, resizable: false, hozAlign: 'center', editable: false,
+  var plus = g.kind === 'model' ? [{ title: '+', field: 'plus', width: adding && adding.col ? (g.levels ? 470 : 330) : 48, headerSort: false, resizable: false, hozAlign: 'center', editable: false,
     headerTooltip: 'Add a column: a new item on ' + g.dims.join(' · '), formatter: function () { return ''; },
-    headerClick: function () { openNewItem(g.dims); } }] : [];
+    titleFormatter: function () { return adding && adding.col ? addColEl(g.dims, g.levels) : '+'; },
+    headerClick: function (e) { if (!adding && !e.target.closest('.add-inline')) startAddCol(g.dims, g.levels); } }] : [];
   return defs.concat(top, plus);
 }
 
@@ -725,9 +764,10 @@ function renderGrid() {
   host.innerHTML = '';
   var g = groupOf(current), L = layoutFor(current), fixed = filterFixed(L);
   var cols = L.columns.length ? buildCols(L, fixed) : { leaves: [{ coords: {} }], bands: [] };
+  if (levelsOn(g, L)) cols.leaves = cols.leaves.filter(function (lf) { return itemShown(g, L, lf.coords[IT]); });
   var rows = treeRows(g, L, fixed, cols.leaves);
   if (L.columns.length && !cols.leaves.length) { host.innerHTML = '<div class="empty-grid">No defined columns.</div>'; return; }
-  if (L.rows.length && !rows.length) { host.innerHTML = '<div class="empty-grid">No defined rows.</div>'; return; }
+  if (L.rows.length && !rows.length && !levelsOn(g, L)) { host.innerHTML = '<div class="empty-grid">No defined rows.</div>'; return; }
   lastCols = cols;
   selCell = null;
   table = new Tabulator(host, {
@@ -739,7 +779,7 @@ function renderGrid() {
   });
   table.on('cellClick', function (e, cell) {
     var d = cell.getRow().getData();
-    if (d._ghost) { openAddMember(d._dim, d._ctx); return; }
+    if (d._ghost) { if (!isAddingRow(d)) startAddRow(d._dim, d._ctx); return; }
     var m = metaOf(cell);
     if (!m) return;
     sel = { item: m.item, coords: m.coords };
@@ -759,9 +799,10 @@ function setTree(open) {
 // in a view it only changes the layout. Everything here is uncommitted until you commit it, and Discard undoes it. ----
 function rowMenu(d) {
   var dim = d._dim, code = d._partial[dim], items = [], parent = {};
+  if (!dim) return false;   // the model row has nothing to delete or hide
   Object.keys(d._partial).forEach(function (k) { if (k !== dim) parent[k] = d._partial[k]; });
-  if (d._childDim && isRealDim(d._childDim)) items.push({ label: 'Add ' + d._childDim + ' under ' + code + '…', action: function () { openAddMember(d._childDim, d._partial); } });
-  if (isRealDim(dim)) items.push({ label: 'Add another ' + dim + (Object.keys(parent).length ? ' to ' + parent[lastKey(parent)] : '') + '…', action: function () { openAddMember(dim, parent); } });
+  if (d._childDim && isRealDim(d._childDim)) items.push({ label: 'Add ' + d._childDim + ' under ' + code + '…', action: function () { startAddRow(d._childDim, d._partial); } });
+  if (isRealDim(dim)) items.push({ label: 'Add another ' + dim + (Object.keys(parent).length ? ' to ' + parent[lastKey(parent)] : '') + '…', action: function () { startAddRow(dim, parent); } });
   items.push({ separator: true });
   items.push({ label: 'Hide this row', action: function () { hideMember(dim, code); } });
   if (isRealDim(dim)) items.push({ label: 'Delete ' + dim + ' ' + code + '…', action: function () { openDeleteMember(dim, code); } });
@@ -776,12 +817,12 @@ function columnMenu(what, g) {
     items.push({ label: 'Edit description and unit…', action: function () { openEditItem(what.item); } });
     if (it.kind === 'calc') items.push({ label: 'Edit formula…', action: function () { openEditFormula(what.item); } });
     items.push({ separator: true });
-    if (model) items.push({ label: 'Add a column after this…', action: function () { openNewItem(g.dims); } });
+    if (model) items.push({ label: 'Add a column after this…', action: function () { startAddCol(g.dims, g.levels); } });
     items.push({ label: 'Hide this column', disabled: !(L.columns.indexOf(IT) >= 0 || L.rows.indexOf(IT) >= 0), action: function () { hideMember(IT, what.item); } });
     items.push({ separator: true });
     items.push({ label: model ? 'Delete ' + what.item + '…' : 'Delete ' + what.item + ' (in its model table)', disabled: !model, action: function () { openDeleteItem(what.item); } });
   } else {
-    items.push({ label: 'Add another ' + what.dim + '…', action: function () { openAddMember(what.dim, {}); } });
+    items.push({ label: 'Add another ' + what.dim + '…', action: function () { startAddRow(what.dim, {}); } });
     items.push({ label: 'Hide this column', action: function () { hideMember(what.dim, what.member); } });
     items.push({ separator: true });
     items.push({ label: 'Delete ' + what.dim + ' ' + what.member + '…', action: function () { openDeleteMember(what.dim, what.member); } });
@@ -828,24 +869,6 @@ function done(p, message) {
   return p.then(refreshAll).then(function () { closeDialog(); notify(message + ' It is not committed yet.', true); }).catch(function (e) { dlgError(e.message); });
 }
 
-function openAddMember(dim, ctx) {
-  var pointers = pointersFor(dim, ctx), pd = lastKey(ctx);
-  var where = pd ? 'Under ' + labelOf(pd, ctx[pd]) + (pointers.length ? ': ' + pointers.map(function (p) { return p.item + ' = ' + p.value; }).join(', ') : '') : 'A new ' + dim + ' of the model.';
-  openDialog('Add ' + dim,
-    '<form id="dlg-form" class="dlg-form">' + field('Code', '<input id="f-code" type="text" value="' + esc(nextCode(dim)) + '" autocomplete="off">', 'Short and fixed: it is what formulas and pointers use.') +
-    field('Name', '<input id="f-name" type="text" placeholder="What people call it" autocomplete="off">') +
-    '<p class="hint">' + esc(where) + ' Its other cells start blank, and the checks say what it still needs.</p><div class="notice" id="dlg-err" hidden></div>' +
-    '<div class="dlg-actions"><button type="button" class="btn" data-dlg-cancel>Cancel</button><button type="submit" class="btn primary">Add ' + esc(dim) + '</button></div></form>',
-    function (root) {
-      root.querySelector('#dlg-form').addEventListener('submit', function (e) {
-        e.preventDefault();
-        var values = {}; pointers.forEach(function (p) { values[p.item] = p.value; });
-        var code = document.getElementById('f-code').value.trim();
-        done(api('POST', '/api/members', { dim: dim, code: code, description: document.getElementById('f-name').value, values: values }), 'Added ' + dim + ' ' + code + '.');
-      });
-    });
-}
-
 function openDeleteMember(dim, code) {
   openDialog('Delete ' + dim + ' ' + code, '<p class="hint">Checking what depends on it…</p>');
   api('GET', '/api/impact/member?dim=' + encodeURIComponent(dim) + '&code=' + encodeURIComponent(code)).then(function (r) {
@@ -861,36 +884,74 @@ function openDeleteMember(dim, code) {
   }).catch(function (e) { document.getElementById('dlg-body').innerHTML = '<div class="notice">' + esc(e.message) + '</div>'; });
 }
 
-function openNewItem(dims) {
-  var onTable = dims.map(function (d) { return ITEMS && Object.keys(ITEMS).filter(function (n) { return ITEMS[n].dims.length === dims.length && dims.every(function (x) { return ITEMS[n].dims.indexOf(x) >= 0; }); }); })[0] || [];
-  var refs = Object.keys(DIMS).map(function (d) { return '<option value="' + esc(d) + '">' + esc(d) + '</option>'; }).join('');
-  openDialog('Add a column',
-    '<form id="dlg-form" class="dlg-form"><p class="hint">A column is an item on <span class="num">' + esc(dims.join(' · ')) + '</span>. Its cells start blank.</p>' +
-    field('Description', '<input id="f-desc" type="text" placeholder="What the column holds" autocomplete="off">') +
-    field('Code', '<input id="f-code" type="text" autocomplete="off">', 'Letters, digits and underscores. It is what formulas use.') +
-    '<div class="fld-row">' + field('Type', '<select id="f-type"><option value="float">Number</option><option value="int">Whole number</option><option value="str">Text</option><option value="date">Date</option><option value="ref">Pointer to…</option></select>') +
-    '<span id="f-ref-wrap" hidden>' + field('Points at', '<select id="f-ref">' + refs + '</select>') + '</span>' +
-    field('Unit', '<input id="f-unit" type="text" placeholder="sqm, thousands…" autocomplete="off">') + '</div>' +
-    '<div class="fld"><span>Value</span><label class="radio"><input type="radio" name="kind" value="entered" checked> Entered</label><label class="radio"><input type="radio" name="kind" value="calc"> Calculated by a formula</label></div>' +
-    '<div id="f-formula-wrap" hidden>' + field('Formula', '<textarea id="f-formula" rows="3" placeholder="lambda x: x[&quot;unit_count&quot;] * x[&quot;area_per_unit&quot;]"></textarea>',
-      'Insert: ' + onTable.map(function (n) { return '<button type="button" class="link" data-insert="' + esc(n) + '">' + esc(n) + '</button>'; }).join(' · ')) + '</div>' +
-    '<div class="notice" id="dlg-err" hidden></div><div class="dlg-actions"><button type="button" class="btn" data-dlg-cancel>Cancel</button><button type="submit" class="btn primary">Add column</button></div></form>',
-    function (root) {
-      var code = root.querySelector('#f-code'), manual = false;
-      code.addEventListener('input', function () { manual = true; });
-      root.querySelector('#f-desc').addEventListener('input', function (e) { if (!manual) code.value = e.target.value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); });
-      root.querySelector('#f-type').addEventListener('change', function (e) { root.querySelector('#f-ref-wrap').hidden = e.target.value !== 'ref'; });
-      root.querySelectorAll('input[name=kind]').forEach(function (r) { r.addEventListener('change', function () { root.querySelector('#f-formula-wrap').hidden = root.querySelector('input[name=kind]:checked').value !== 'calc'; }); });
-      root.querySelectorAll('[data-insert]').forEach(function (b) { b.addEventListener('click', function () { var t = root.querySelector('#f-formula'); t.value += 'x["' + b.dataset.insert + '"]'; t.focus(); }); });
-      root.querySelector('#dlg-form').addEventListener('submit', function (e) {
-        e.preventDefault();
-        var calc = root.querySelector('input[name=kind]:checked').value === 'calc', type = root.querySelector('#f-type').value;
-        var body = { name: code.value, dims: dims, dtype: type, ref: type === 'ref' ? root.querySelector('#f-ref').value : null, unit: root.querySelector('#f-unit').value,
-          description: root.querySelector('#f-desc').value, formula: calc ? root.querySelector('#f-formula').value : '' };
-        done(api('POST', '/api/items', body), 'Added column ' + code.value + '.');
-      });
-    });
+// -- adding in the grid: the ghost row turns into inputs in place, the "+" header into a column to name --
+function sameCtx(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function isAddingRow(d) { return !!(adding && adding.row && adding.row.dim === d._dim && sameCtx(adding.row.ctx, d._ctx)); }
+function addRowHtml(d) {
+  return '<span class="add-inline"><input class="add-code" type="text" value="' + esc(nextCode(d._dim)) + '" aria-label="Code" autocomplete="off">' +
+    '<input class="add-name" type="text" placeholder="Name" aria-label="Name" autocomplete="off">' +
+    '<span class="add-hint">Enter to add · Esc to cancel</span></span>';
 }
+// focus after the click that started it has finished, or Tabulator takes it back
+function startAddRow(dim, ctx) { adding = { row: { dim: dim, ctx: ctx } }; bumpGrid(); renderGrid(); setTimeout(focusAdding, 0); }
+function startAddCol(dims, levels) { adding = { col: dims, levels: !!levels }; bumpGrid(); renderGrid(); setTimeout(focusAdding, 0); }
+function stopAdding() { adding = null; bumpGrid(); renderGrid(); }
+function focusAdding() {
+  var el = document.querySelector('#grid .add-inline input');
+  if (!el) return;
+  if (adding && adding.row) { var r = el.closest('.tabulator-row'); if (r) r.scrollIntoView({ block: 'nearest' }); }
+  el.focus(); el.select();
+}
+function perText(sel, all) {
+  if (!sel.length) return 'One value for the whole model. It shows on the Model row.';
+  var rest = all.filter(function (d) { return sel.indexOf(d) < 0; });
+  return 'One value for each ' + sel.join(' and ') + (rest.length ? ', the same in every ' + rest.join(' and ') + '.' : '.');
+}
+function addColEl(dims, levels) {
+  var types = [['float', 'Number'], ['int', 'Whole number'], ['str', 'Text'], ['date', 'Date']];
+  var opts = types.map(function (t) { return '<option value="' + t[0] + '">' + t[1] + '</option>'; }).join('') +
+    Object.keys(DIMS).map(function (d) { return '<option value="ref:' + esc(d) + '">Pointer to ' + esc(d) + '</option>'; }).join('');
+  var el = document.createElement('span');
+  el.className = 'add-inline';
+  el.innerHTML = '<input class="add-name" type="text" placeholder="New column" aria-label="Column name" autocomplete="off"><select class="add-type" aria-label="Type">' + opts + '</select>' +
+    (levels ? '<span class="add-per">One for each: ' + dims.map(function (d) { return '<label><input type="checkbox" class="add-dim" value="' + esc(d) + '" checked> ' + esc(d) + '</label>'; }).join(' ') +
+      '</span><span class="add-hint add-per-text">' + esc(perText(dims, dims)) + '</span>' : '') +
+    '<span class="add-hint">Enter to add · Esc to cancel</span>';
+  return el;
+}
+
+// keys and clicks inside the inline inputs belong to them, not to the grid
+document.addEventListener('keydown', function (e) {
+  var box = e.target.closest && e.target.closest('.add-inline');
+  if (!box || !adding) return;
+  e.stopPropagation();
+  if (e.key === 'Escape') { e.preventDefault(); stopAdding(); return; }
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  var body, url, msg;
+  if (adding.row) {
+    var dim = adding.row.dim, ctx = adding.row.ctx, code = box.querySelector('.add-code').value.trim(), values = {};
+    pointersFor(dim, ctx).forEach(function (p) { values[p.item] = p.value; });
+    body = { dim: dim, code: code, description: box.querySelector('.add-name').value, values: values };
+    url = '/api/members'; msg = 'Added ' + dim + ' ' + code + '.';
+  } else {
+    var title = box.querySelector('.add-name').value.trim(), type = box.querySelector('.add-type').value;
+    var boxes = box.querySelectorAll('.add-dim'), dimsOn = boxes.length ? adding.col.filter(function (d) { return box.querySelector('.add-dim[value="' + d + '"]').checked; }) : adding.col;
+    body = { name: title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''), dims: dimsOn, dtype: type.indexOf('ref:') === 0 ? 'ref' : type,
+      ref: type.indexOf('ref:') === 0 ? type.slice(4) : null, unit: '', description: title, formula: '' };
+    url = '/api/items'; msg = 'Added column ' + body.name + '.';
+  }
+  api('POST', url, body).then(function () { adding = null; return refreshAll(); })
+    .then(function () { notify(msg + ' It is not committed yet.', true); })
+    .catch(function (err) { notify(err.message, false); });
+}, true);
+document.addEventListener('click', function (e) { if (e.target.closest && e.target.closest('.add-inline')) e.stopPropagation(); }, true);
+document.addEventListener('change', function (e) {
+  var box = e.target.closest && e.target.closest('.add-inline');
+  if (!box || !e.target.classList.contains('add-dim') || !adding || !adding.col) return;
+  var on = adding.col.filter(function (d) { return box.querySelector('.add-dim[value="' + d + '"]').checked; });
+  box.querySelector('.add-per-text').textContent = perText(on, adding.col);
+});
 
 function openEditItem(name) {
   var it = ITEMS[name];
@@ -1065,6 +1126,7 @@ document.addEventListener('click', function (e) {
       else moveDim(current, ds.wdim, ds.act.slice(3));
       menu = null; render(); return;
     }
+    if (ds.detail !== undefined) { layoutFor(current).detail = +ds.detail; bumpGrid(); render(); return; }
     if (ds.expandall) { setTree(true); return; }
     if (ds.collapseall) { setTree(false); return; }
     if (ds.goto) { var cg = groupOf(current); if (!(cg && cg.items.indexOf(ds.goto) >= 0)) current = viewOf(ds.goto); sel = { item: ds.goto, coords: JSON.parse(ds.co) }; render(); return; }

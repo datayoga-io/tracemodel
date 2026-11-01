@@ -52,7 +52,9 @@ def test_the_model_lists_dimensions_items_checks_and_views(client):
     assert amount["kind"] == "calc" and amount["formula"].startswith("lambda x:") and amount["dims"] == ["line"]
     assert body["items"]["milestone_date"]["dtype"] == "date"
     assert {c["id"] for c in body["checks"]} == {"lines_have_terms", "milestones_dated", "within_contract_value"}
-    assert [t["id"] for t in body["tables"]][:2] == ["projects", "quantities"]
+    assert [t["id"] for t in body["tables"]][:2] == ["quantities", "milestones"]
+    assert body["tables"][0]["levels"] is True   # the grid shows the model, each project and each unit type as rows
+    assert body["items"]["vat_rate"]["dims"] == [] and body["items"]["fit_out_cost"]["dims"] == ["unit_type"]
     assert {v["id"] for v in body["views"]} == {"cashflow", "unitmix", "commitments"}
 
 
