@@ -90,12 +90,16 @@ def test_a_filter_on_a_value_counts_as_a_branch(m):
 @pytest.mark.parametrize("source", [
     "lambda x: x[x['which']]",
     "lambda x: x['revenue'].lag('period', x['n'])",
-    "lambda x: x['revenue'].sel(region=x['which'])",
     "lambda x: sum(1 for c in x['revenue'])",
 ])
 def test_reads_that_depend_on_a_value_are_refused(m, source):
     with pytest.raises(tm.DefinitionError, match="depends on a value|can't loop over a cell"):
         m.add_item("t", ("region", "period"), formula=source)
+
+
+def test_a_label_read_from_a_number_is_refused(m):
+    with pytest.raises(tm.DefinitionError, match="'which' is float, not a label"):
+        m.add_item("t", ("region", "period"), formula="lambda x: x['revenue'].sel(region=x['which'])")
 
 
 def test_every_static_read_is_a_superset_of_the_run(m):

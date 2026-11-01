@@ -13,6 +13,18 @@ if TYPE_CHECKING:
     from .formula import Formula
     from .model import Check, Model
 
+@dataclass(frozen=True)
+class Ref:
+    """The type of an item whose value is a label of another dimension: tm.Ref("project").
+
+    A pointer: `add_item("line_engagement", ("line",), dtype=tm.Ref("engagement"))`. Its values
+    are text like any str item's, checked against the dimension's labels. A formula follows one
+    with x["milestone_date"].sel(project=x["engagement_project"]).
+    """
+
+    dim: str
+
+
 SOURCE_REQUIRED = ("document", "url", "section")
 SOURCE_OPTIONAL = ("page", "quote")
 

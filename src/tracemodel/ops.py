@@ -14,6 +14,8 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .values import Ref
+
 if TYPE_CHECKING:
     from .model import Model
 
@@ -93,8 +95,8 @@ def apply(model: Model, op: Op) -> None:
         keep = {_code(e) for e in new["coords"]}
         model.remove_coords(key, [c for c in model.dimensions[key].coords if c not in keep])
     elif kind == "item.add":
-        model.add_item(key, new["dims"], new["dtype"], new.get("attrs"), _item_formula(new),
-                       new.get("description"))
+        model.add_item(key, new["dims"], Ref(new["ref"]) if new.get("ref") else new["dtype"], new.get("attrs"),
+                       _item_formula(new), new.get("description"))
     elif kind == "item.update":
         if (old or {}).get("formula") != new.get("formula") or (old or {}).get("env") != new.get("env"):
             model.set_formula(key, _item_formula(new))

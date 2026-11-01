@@ -8,7 +8,8 @@ the lambda to write instead.
 from __future__ import annotations
 
 import html
-from collections.abc import Mapping
+import itertools
+from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from .errors import DefinitionError, UnknownCoord
@@ -79,16 +80,21 @@ class Cell(_Shows):
     `shifts` moves a dim's label by a number of steps along the dim's order:
     1 is the previous label (lag), -1 the next (lead).
 
+    `wild` names dims whose label comes from a value read at run time (a pointer, see
+    Item.ref). Such a cell stands for every label of those dims when a formula's reads are
+    traced; at run time the label is known and the cell is an ordinary one.
+
     A formula reads cells through its `x`; arithmetic on a Cell raises, with the lambda to
     write instead.
     """
 
     def __init__(self, model: Model, item: Item, coords: Mapping[str, str] | None = None,
-                 shifts: Mapping[str, int] | None = None):
+                 shifts: Mapping[str, int] | None = None, wild: frozenset[str] | set[str] | None = None):
         self.model = model
         self.item = item
         self.coords = dict(coords or {})
         self.shifts = {d: n for d, n in (shifts or {}).items() if n}
+        self.wild = frozenset(d for d in (wild or ()) if d not in self.coords)
 
     __add__, __radd__ = _op("+"), _op("+", True)
     __sub__, __rsub__ = _op("-"), _op("-", True)
@@ -118,14 +124,21 @@ class Cell(_Shows):
                 f"{label!r} is a coord of several dims of {self.item.name!r} "
                 f"({', '.join(dims)}); use .sel({dims[0]}=...)"
             )
-        return Cell(self.model, self.item, self.coords | {dims[0]: label}, self.shifts)
+        return Cell(self.model, self.item, self.coords | {dims[0]: label}, self.shifts, self.wild)
 
     def sel(self, **coords: str) -> Cell:
         for dim, label in coords.items():
             if dim not in self.item.dims:
                 raise UnknownCoord(f"{self.item.name!r} has no dim {dim!r}")
             self.model.dimensions[dim].require(label)
-        return Cell(self.model, self.item, self.coords | coords, self.shifts)
+        return Cell(self.model, self.item, self.coords | coords, self.shifts, self.wild)
+
+    def by_value(self, *dims: str) -> Cell:
+        """The cell with `dims` taken from a value read at run time: any label of those dims."""
+        for dim in dims:
+            if dim not in self.item.dims:
+                raise UnknownCoord(f"{self.item.name!r} has no dim {dim!r}")
+        return Cell(self.model, self.item, self.coords, self.shifts, self.wild | set(dims))
 
     def shift(self, **steps: int) -> Cell:
         """The value `n` labels earlier along a dim, as in xarray: shift(period=1) is the
@@ -139,7 +152,7 @@ class Cell(_Shows):
             if isinstance(n, bool) or not isinstance(n, int):
                 raise DefinitionError(f"shift({dim}=...) takes a whole number of steps, got {n!r}")
             shifts[dim] = shifts.get(dim, 0) + n
-        return Cell(self.model, self.item, self.coords, shifts)
+        return Cell(self.model, self.item, self.coords, shifts, self.wild)
 
     def lag(self, dim: str, n: int = 1) -> Cell:
         """The value `n` labels before, as in SQL LAG: lag("period") is the prior period."""
@@ -156,10 +169,12 @@ class Cell(_Shows):
         return [self]
 
     def free_dims(self) -> list[str]:
-        return [d for d in self.item.dims if d not in self.coords]
+        return [d for d in self.item.dims if d not in self.coords and d not in self.wild]
 
     def resolve(self, at: Mapping[str, str]) -> dict[str, str]:
         """Full coords: the cell's own, plus `at` for its free dims, moved by any shift."""
+        if self.wild:
+            raise DefinitionError(f"{self!r} takes {', '.join(sorted(self.wild))} from a value; use expand(at)")
         full = {d: self.coords[d] if d in self.coords else at[d] for d in self.item.dims}
         for dim, n in self.shifts.items():
             dimension = self.model.dimensions[dim]
@@ -170,6 +185,15 @@ class Cell(_Shows):
                 raise OutOfRange(f"{self!r} has no {dim} {where} {full[dim]!r}", dim, n)
             full[dim] = labels[i]
         return full
+
+    def expand(self, at: Mapping[str, str]) -> Iterator[dict[str, str]]:
+        """Every full coords the cell can mean at `at`. A dim taken from a value runs over all its labels."""
+        if not self.wild:
+            yield self.resolve(at)
+            return
+        dims = sorted(self.wild)
+        for combo in itertools.product(*(self.model.dimensions[d].coords for d in dims)):
+            yield Cell(self.model, self.item, self.coords | dict(zip(dims, combo)), self.shifts).resolve(at)
 
     def _unambiguous(self, label: str) -> bool:
         """`item[label]` reads back as this cell: the label belongs to only one of its dims."""
@@ -187,6 +211,8 @@ class Cell(_Shows):
         for dim, n in self.shifts.items():
             verb, k = ("lag", n) if n > 0 else ("lead", -n)
             base += f".{verb}({dim!r})" if k == 1 else f".{verb}({dim!r}, {k})"
+        if self.wild:
+            base += f".by_value({', '.join(repr(d) for d in sorted(self.wild))})"
         return base
 
 

@@ -44,6 +44,7 @@ from .values import (
     CellRead,
     CheckResult,
     Entry,
+    Ref,
     Report,
     Trace,
     _Nil,
@@ -112,6 +113,7 @@ class Item:
     attrs: dict[str, Any] = field(default_factory=dict)
     formula: Formula | None = field(default=None, compare=False)  # calculates cells with no entered value
     description: str | None = None  # what the item is, as the source titles it: "Lease-related assets and liabilities"
+    ref: str | None = None  # a pointer: the dimension whose labels are this item's values (dtype is str)
 
     @property
     def unit_label(self) -> str:
@@ -419,7 +421,7 @@ class Model:
         """Remove a dimension that no item uses (so it has no cells, values or checks)."""
         if name not in self.dimensions:
             raise UnknownCoord(f"no dimension {name!r}; declared: {', '.join(self.dimensions)}")
-        users = [i.name for i in self.items.values() if name in i.dims]
+        users = [i.name for i in self.items.values() if name in i.dims or i.ref == name]
         if users:
             raise DefinitionError(
                 f"can't remove dimension {name!r}: items {', '.join(users)} use it"
@@ -455,6 +457,12 @@ class Model:
             if orphans:
                 raise DefinitionError(f"can't remove {', '.join(gone)} from {name!r}: "
                                       f"{', '.join(orphans)} would lose a parent; remove them too")
+        pointed = sorted({f"{k[0]}{_fmt(e.coords)} = {e.value!r}" for k, e in self._entries.items()
+                          if self.items[k[0]].ref == name and e.value in gone})
+        if pointed:
+            raise DefinitionError(f"can't remove {', '.join(gone)} from {name!r}: still pointed at by "
+                                  f"{'; '.join(pointed[:3])}{' ...' if len(pointed) > 3 else ''}; "
+                                  "point those at another label first")
         listed = [c.id for c in self.checks.values()
                   if name in c.coords and name not in c.dynamic and set(c.coords[name]) & set(gone)]
         if listed:
@@ -485,7 +493,7 @@ class Model:
         self,
         name: str,
         dims: Iterable[str],
-        dtype: type | str = float,
+        dtype: type | str | Ref = float,
         attrs: Mapping[str, Any] | None = None,
         formula: Formula | Callable[..., Any] | str | None = None,
         description: str | None = None,
@@ -509,15 +517,23 @@ class Model:
                 raise DefinitionError(
                     f"item {name!r} uses dim {d!r}, which is not declared; call add_dimension first"
                 )
+        ref = None
+        if isinstance(dtype, str) and dtype.startswith("ref:"):
+            dtype = Ref(dtype[4:])
+        if isinstance(dtype, Ref):  # a pointer: text, checked against the labels of dtype.dim
+            ref, dtype = dtype.dim, str
+            if ref not in self.dimensions:
+                raise DefinitionError(f"item {name!r}: tm.Ref({ref!r}): no dimension {ref!r}; call add_dimension first")
         if isinstance(dtype, str):
             dtype = DTYPES.get(dtype) or dates.dtype_from_name(dtype)  # type: ignore[assignment]
         if not any(dtype is t for t in (int, float, str, date, datetime)):
-            raise DefinitionError(f"item {name!r}: dtype must be int, float, str, date or datetime, got {dtype!r}")
+            raise DefinitionError(f"item {name!r}: dtype must be int, float, str, date or datetime "
+                                  f"(or tm.Ref(dim) for a pointer), got {dtype!r}")
         if attrs is not None and not isinstance(attrs, Mapping):
             raise DefinitionError(f"item {name!r}: attrs must be a dict")
         if description is not None and not isinstance(description, str):
             raise DefinitionError(f"item {name!r}: description must be a string")
-        item = Item(name, dims, dtype, dict(attrs or {}), description=description)
+        item = Item(name, dims, dtype, dict(attrs or {}), description=description, ref=ref)
         old = self.items.get(name)
         if old is not None and old != item:
             raise DefinitionError(f"item {name!r} already exists with a different definition; change its attrs or "
@@ -531,7 +547,7 @@ class Model:
                     return old
                 raise DefinitionError(f"item {name!r} already exists with a different formula; "
                                       f"change it with set_formula({name!r}, ...)")
-            self.items[name] = item = Item(name, dims, dtype, dict(attrs or {}), formula, description)
+            self.items[name] = item = Item(name, dims, dtype, dict(attrs or {}), formula, description, ref)
             # a new item changes no other cell's reads, unless its name is also a label (x["/a"])
             self._changed(reads_changed=any(name in d for d in self.dimensions.values()))
             if formula is not None:
@@ -555,7 +571,7 @@ class Model:
             formula = self._as_formula(formula, f"item {name!r}: formula")
         if formula == old.formula:
             return old
-        item = Item(old.name, old.dims, old.dtype, dict(old.attrs), formula, old.description)  # type: ignore[arg-type]
+        item = Item(old.name, old.dims, old.dtype, dict(old.attrs), formula, old.description, old.ref)  # type: ignore[arg-type]
         self.items[name] = item
         self._changed()
         if formula is not None:
@@ -580,7 +596,7 @@ class Model:
             raise DefinitionError(f"item {name!r}: description must be a string")
         item = Item(old.name, old.dims, old.dtype,
                     dict(old.attrs) if isinstance(attrs, _Unset) else dict(attrs or {}), old.formula,
-                    old.description if isinstance(description, _Unset) else description)
+                    old.description if isinstance(description, _Unset) else description, old.ref)
         if item == old:
             return old
         self.items[name] = item
@@ -684,11 +700,7 @@ class Model:
         at = dict(zip(item.dims, key[1]))
         out = []
         for c in self._precedent_cells(formula, item, at, lambda: f"{key[0]}{_fmt(at)}: formula"):
-            try:
-                full = c.resolve(at)
-            except OutOfRange:
-                continue
-            out.append((c.item.name, tuple(full[d] for d in c.item.dims)))
+            out.extend(_read_keys(c, at))
         return out
 
     def item(self, name: str) -> Item:
@@ -768,7 +780,7 @@ class Model:
                         )
                     used |= set(cell.free_dims())
                     try:  # a lag or lead must land on a declared label in every run
-                        cell.resolve(at)
+                        list(cell.expand(at))
                     except OutOfRange as e:
                         keep = f"[{e.steps}:]" if e.steps > 0 else f"[:{e.steps}]"
                         run = ", ".join(f"{d}={v}" for d, v in at.items())
@@ -853,9 +865,9 @@ class Model:
                 for at in check.runs():
                     run = ("check", check.id, tuple(at.items()))
                     for c in self._precedent_cells(check.expect, None, at):
-                        k = _read_key(c, at)
-                        if k is not None and run not in index.get(k, ()):
-                            index.setdefault(k, []).append(run)
+                        for k in _read_keys(c, at):
+                            if run not in index.get(k, ()):
+                                index.setdefault(k, []).append(run)
             self._dependents_index = index
         return self._dependents_index.get(key, [])
 
@@ -935,7 +947,7 @@ class Model:
                 self._orders[id(formula)] = (formula, cells, keys, order)  # type: ignore[assignment]
         if missing:
             seen = {_shape(c) for c, _ in raw}
-            raw = raw + [(c, at) for c, k in zip(cells, keys) if k not in seen]
+            raw = raw + [(c, at) for c, k in zip(cells, keys) if k not in seen and not c.wild]
         if len(raw) < 2:
             return raw
         shapes = [_shape(c) for c, _ in raw]
@@ -1168,8 +1180,8 @@ class Model:
                 formula = None
                 if i.get("formula") is not None:
                     formula = _formula_from_data(i, "formula", f"item {i['name']!r}: formula", formulas)
-                model.add_item(i["name"], i["dims"], i["dtype"], i.get("attrs"), formula=formula,
-                               description=i.get("description"))
+                model.add_item(i["name"], i["dims"], Ref(i["ref"]) if i.get("ref") else i["dtype"], i.get("attrs"),
+                               formula=formula, description=i.get("description"))
         for c in data["checks"]:
             specs = {dim: _spec_from_data(spec) for dim, spec in c.get("coords", {}).items()}
             for dim in specs:
@@ -1259,7 +1271,7 @@ class Model:
         for i in self.items.values():
             formula = f"  = {i.formula!r}" if i.formula is not None else ""
             described = f"  {i.description}" if i.description else ""
-            lines.append(f"  {i.name:<{width}}   ({', '.join(i.dims)})  {i.dtype.__name__}{described}  {_kv(i.attrs)}".rstrip()
+            lines.append(f"  {i.name:<{width}}   ({', '.join(i.dims)})  {'ref ' + i.ref if i.ref else i.dtype.__name__}{described}  {_kv(i.attrs)}".rstrip()
                          + formula)
         lines.append("Checks:")
         for c in self.checks.values():
@@ -1383,13 +1395,9 @@ class Model:
             seen.add(key)
             stack.append((key, True))
             for c in template.cells:
-                try:
-                    dep = c.resolve(full)
-                except OutOfRange:
-                    continue
-                dep_key = (c.item.name, tuple(dep[d] for d in c.item.dims))
-                if dep_key not in self._cache and dep_key not in seen:
-                    stack.append((dep_key, False))
+                for dep_key in _read_keys(c, full):
+                    if dep_key not in self._cache and dep_key not in seen:
+                        stack.append((dep_key, False))
 
     def _is_nil(self, cell: Cell, at: Mapping[str, str]) -> bool:
         return self._value(cell, at) is NIL
@@ -1421,8 +1429,7 @@ class Model:
         except (Missing, ZeroDivisionError):
             return None
 
-    @staticmethod
-    def _validate(item: Item, value: object, source: object) -> None:
+    def _validate(self, item: Item, value: object, source: object) -> None:
         if value is NIL or _is_formula(value) or item.dtype in dates.TEMPORAL:  # dates: set_value coerced it
             pass
         elif item.dtype is str:
@@ -1430,6 +1437,9 @@ class Model:
                 raise InvalidValue(f"{item.name} is str: value must be text, got {value!r}")
             if not value.strip():
                 raise InvalidValue(f"{item.name}: empty text; when the source shows nothing, enter tm.NIL")
+            if item.ref is not None and value not in self.dimensions[item.ref]:
+                raise InvalidValue(f"{item.name} points at {item.ref}: {value!r} is not one of its labels"
+                                   f"{_labels_hint(self.dimensions[item.ref].coords)}")
         elif isinstance(value, bool) or not isinstance(value, (int, float)):
             raise InvalidValue(f"{item.name}: value must be a number, got {value!r}")
         elif item.dtype is int and not isinstance(value, int):
@@ -1493,6 +1503,19 @@ def _reraise_with(e: DefinitionError, prefix: str) -> NoReturn:
     if type(e) is not DefinitionError or str(e).startswith(prefix):
         raise e
     raise DefinitionError(f"{prefix}: {e}") from None
+
+
+def _labels_hint(labels: Iterable[str]) -> str:
+    labels = list(labels)
+    return f" (labels: {', '.join(labels[:8])}{', ...' if len(labels) > 8 else ''})"
+
+
+def _read_keys(cell: Cell, at: Mapping[str, str]) -> list[tuple]:
+    """The cells a read can mean at `at`: one, or every label of a dim taken from a pointer's value."""
+    try:
+        return [(cell.item.name, tuple(full[d] for d in cell.item.dims)) for full in cell.expand(at)]
+    except OutOfRange:
+        return []
 
 
 def _read_key(cell: Cell, at: Mapping[str, str]) -> tuple | None:
@@ -1629,6 +1652,8 @@ def _dimension_data(dim: Dimension) -> dict[str, Any]:
 
 def _item_data(item: Item, model: Model) -> dict[str, Any]:
     data: dict[str, Any] = {"name": item.name, "dims": list(item.dims), "dtype": item.dtype.__name__}
+    if item.ref is not None:
+        data["ref"] = item.ref
     if item.description is not None:
         data["description"] = item.description
     if item.attrs:
