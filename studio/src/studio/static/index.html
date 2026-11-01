@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tracemodel studio</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/vendor/tabulator.min.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="hl">
+      <h1 id="title">tracemodel studio</h1>
+      <span class="branch" id="branch">main</span>
+      <span class="sub" id="subtitle"></span>
+    </div>
+    <div class="pending" id="pending"></div>
+  </header>
+
+  <p class="lede">When do we pay each line of each contract, and how much? Projects, engagements and payment lines are separate. An engagement points at its project and its contract, and a line points at its engagement. A pointer is an item like any other: it shows as a column, and the calculations follow it to find a line's project.</p>
+  <p class="lede"><b>Model</b> is the data: dimensions, and the items on them, entered or calculated. Each model table holds the items that share the same dimensions. A <b>view</b> is a saved layout over model items. It holds no data of its own, so editing a cell in a view edits the model.</p>
+  <details class="assume">
+    <summary>Assumptions in this example</summary>
+    <ul>
+      <li>An engagement belongs to one project and comes from one contract. A contract that covers two projects has two engagements, one for each.</li>
+      <li>Each line has one date term and one price term.</li>
+      <li>Price bases: a fixed amount, a rate times the project's residential area, a rate times its retail area, or a percent of its sale value.</li>
+      <li>Milestones are shared by all projects. Each project has its own dates.</li>
+      <li>This page reads a real tracemodel model through an API. The formulas are the model's own, and a change is uncommitted until you commit it.</li>
+      <li>Pointers are required: you can change one to another valid label, but not clear it.</li>
+      <li>Every date item has date parts, like the pandas <span class="num">dt</span> accessor: <span class="num">payment_date.dt.year</span>, <span class="num">.dt.quarter</span>, <span class="num">.dt.month</span>, <span class="num">.dt.fiscal_year</span> and <span class="num">.dt.fiscal_quarter</span>. They lay out like dimensions. Month and quarter are of the year, so nest them under the year for a timeline. The fiscal year starts in April in this example.</li>
+      <li>A contract's committed amount is the sum of the amounts of the engagements that point at it, across projects. It should not exceed the contract value.</li>
+      <li>A blank cell means nothing was entered. <span class="num">n/a</span> means someone marked it as not applicable, for example Hillside Court has no penthouses. Defined only keeps n/a and hides blanks.</li>
+    </ul>
+  </details>
+
+  <div class="notice" id="toast" role="alert" hidden></div>
+  <div class="checks" id="checks"></div>
+
+  <div class="main">
+    <div class="side">
+      <section class="panel" aria-label="Model"><div class="items" id="items-model"></div></section>
+      <section class="panel" aria-label="Views"><div class="items" id="items-view"></div></section>
+    </div>
+
+    <section class="panel" aria-label="Grid">
+      <div class="controls" id="controls"></div>
+      <div class="layoutpanel" id="layout" hidden></div>
+      <div class="legend">
+        <span><span class="sw" style="background:var(--entered)"></span>entered</span>
+        <span><span class="sw" style="background:var(--calc)"></span>calculated</span>
+        <span><span class="sw" style="background:var(--group)"></span>group</span>
+        <span><span class="sw" style="border-color:var(--pend);background:var(--pend-bg)"></span>edited, not committed</span>
+        <span><span class="na">n/a</span> marked not applicable</span>
+        <span>Double-click an entered cell to edit.</span>
+      </div>
+      <div class="gridwrap"><div id="grid"></div></div>
+    </section>
+
+    <section class="panel" aria-label="Cell detail">
+      <div class="panel-h"><h2>Cell</h2></div>
+      <div class="detail" id="detail"></div>
+    </section>
+  </div>
+</div>
+
+<div class="dlg-back" id="dlg" hidden><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlg-title"><h3 id="dlg-title"></h3><div id="dlg-body"></div></div></div>
+<script src="/static/vendor/tabulator.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

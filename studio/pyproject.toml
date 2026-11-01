@@ -1,0 +1,32 @@
+[project]
+name = "tracemodel-studio"
+version = "0.0.1"
+description = "A grid for tracemodel models: an API and a web page, kept apart from the library."
+requires-python = ">=3.12"
+dependencies = [
+    "pytracemodel",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+
+[project.scripts]
+tracemodel-studio = "studio.__main__:main"
+
+[tool.uv.sources]
+pytracemodel = { path = "..", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/studio"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
