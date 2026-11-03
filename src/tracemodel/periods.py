@@ -13,6 +13,11 @@ end_time. In a function formula, x.period is the cell's Period:
 Frequencies are pandas' period aliases: "M"; "Q" or "Q-SEP" (quarters of a fiscal year ending
 in September); "Y" or "Y-SEP" (fiscal years). A fiscal year is named by the calendar year it
 ends in, as in pandas: with "Y-SEP", "2025" is October 2024 to September 2025.
+
+A 52/53-week fiscal year ends on a weekday, as pandas' FY5253 offset: "Y-SEP-SAT-LAST" on the
+last Saturday of September (Apple), "Y-JAN-SAT-NEAREST" on the Saturday nearest 31 January
+(retail). Its quarters are 13 weeks, "Q-SEP-SAT-LAST"; in a 53-week year the first quarter takes
+the extra week, or the one named last, as FY5253Quarter's qtr_with_extra_week: "Q-JAN-SAT-NEAREST-4".
 """
 
 from __future__ import annotations
@@ -20,65 +25,84 @@ from __future__ import annotations
 import calendar
 import re
 from collections.abc import Iterator
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from .errors import DefinitionError
 
 _MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+_WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 _STEP = {"M": 1, "Q": 3, "Y": 12}
 _DEFAULT_LABEL = {"M": "{year}-{month:02d}", "Q": "{year}Q{quarter}", "Y": "{year}"}
 
 
-def _parse_freq(freq: str) -> tuple[str, int]:
-    """(kind, the month a year ends in, 1-12): "Q-SEP" -> ("Q", 9); "M" -> ("M", 12)."""
+# A 52/53-week year's rule: (weekday, Monday 0; "LAST" or "NEAREST"; the quarter that takes a 53rd week)
+Weeks = tuple[int, str, int]
+
+
+def _parse_freq(freq: str) -> tuple[str, int, Weeks | None]:
+    """(kind, the month a year ends in, 1-12, the 52/53-week rule or None): "Q-SEP" -> ("Q", 9, None);
+    "M" -> ("M", 12, None); "Y-SEP-SAT-LAST" -> ("Y", 9, (5, "LAST", 1))."""
     if not isinstance(freq, str):
         raise DefinitionError(f"freq must be a string such as 'M', 'Q-SEP' or 'Y-SEP', got {freq!r}")
-    m = re.fullmatch(r"(M|Q|Y|A)(?:-([A-Z]{3}))?", freq.upper())
-    if not m or (m[1] == "M" and m[2]) or (m[2] and m[2] not in _MONTHS):
+    m = re.fullmatch(r"(M|Q|Y|A)(?:-([A-Z]{3})(?:-([A-Z]{3})-(LAST|NEAREST)(?:-([1-4]))?)?)?", freq.upper())
+    if (not m or (m[1] == "M" and m[2]) or (m[2] and m[2] not in _MONTHS) or (m[3] and m[3] not in _WEEKDAYS)
+            or (m[5] and m[1] != "Q")):
         raise DefinitionError(
             f"freq {freq!r}: use 'M' (months), 'Q' or 'Q-<month>' (quarters), 'Y' or 'Y-<month>' "
-            "(years ending in that month), e.g. 'Y-SEP', as pandas names them"
+            "(years ending in that month), e.g. 'Y-SEP', as pandas names them; or a 52/53-week year "
+            "ending on a weekday, 'Y-SEP-SAT-LAST' or 'Y-JAN-SAT-NEAREST', and its 13-week quarters, "
+            "'Q-SEP-SAT-LAST' ('Q-JAN-SAT-NEAREST-4': the 4th takes a 53rd week)"
         )
     kind = "Y" if m[1] == "A" else m[1]
-    return kind, _MONTHS.index(m[2]) + 1 if m[2] else 12
+    weeks = (_WEEKDAYS.index(m[3]), m[4], int(m[5] or 1)) if m[3] else None
+    return kind, _MONTHS.index(m[2]) + 1 if m[2] else 12, weeks
 
 
-def _canonical(kind: str, end_month: int) -> str:
+def _canonical(kind: str, end_month: int, weeks: Weeks | None) -> str:
+    if weeks is not None:
+        weekday, variation, extra = weeks
+        rule = f"{kind}-{_MONTHS[end_month - 1]}-{_WEEKDAYS[weekday]}-{variation}"
+        return rule if kind == "Y" or extra == 1 else f"{rule}-{extra}"
     return kind if kind == "M" or end_month == 12 else f"{kind}-{_MONTHS[end_month - 1]}"
 
 
 class Period:
     """One month, quarter or (fiscal) year, as pandas' Period: Period("2025", "Y-SEP")."""
 
-    __slots__ = ("_end", "_end_month", "_kind", "_label")
+    __slots__ = ("_end", "_end_month", "_kind", "_label", "_weeks")
 
     def __init__(self, value: str | date, freq: str = "M", label: str | None = None):
-        kind, end_month = _parse_freq(freq)
-        self._kind, self._end_month = kind, end_month
-        self._end = _end_index(value, kind, end_month)  # the period's last month, as year * 12 + month - 1
+        kind, end_month, weeks = _parse_freq(freq)
+        self._kind, self._end_month, self._weeks = kind, end_month, weeks
+        # the period's last month, as year * 12 + month - 1; of 52/53 weeks, the month it is named by
+        self._end = _end_index(value, kind, end_month, weeks)
         self._label = label
 
     @classmethod
-    def _at(cls, end: int, kind: str, end_month: int, label: str | None) -> Period:
+    def _at(cls, end: int, kind: str, end_month: int, weeks: Weeks | None, label: str | None) -> Period:
         p = cls.__new__(cls)
-        p._end, p._kind, p._end_month, p._label = end, kind, end_month, label
+        p._end, p._kind, p._end_month, p._weeks, p._label = end, kind, end_month, weeks, label
         return p
 
     # -- what it is ---------------------------------------------------------
     @property
     def freq(self) -> str:
-        return _canonical(self._kind, self._end_month)
+        return _canonical(self._kind, self._end_month, self._weeks)
 
     @property
     def start_time(self) -> date:
         """The first day, as pandas' start_time (here a date)."""
+        if self._weeks is not None:
+            return self._week_span()[0]
         first = self._end - _STEP[self._kind] + 1
         return date(first // 12, first % 12 + 1, 1)
 
     @property
     def end_time(self) -> date:
         """The last day, as pandas' end_time (here a date: the period includes all of it)."""
+        if self._weeks is not None:
+            return self._week_span()[1]
         y, m = self._end // 12, self._end % 12 + 1
         return date(y, m, calendar.monthrange(y, m)[1])
 
@@ -124,7 +148,19 @@ class Period:
         return max(0, (hi - lo).days + 1) / self.days
 
     def shift(self, n: int) -> Period:
-        return Period._at(self._end + n * _STEP[self._kind], self._kind, self._end_month, self._label)
+        return Period._at(self._end + n * _STEP[self._kind], self._kind, self._end_month, self._weeks, self._label)
+
+    def _week_span(self) -> tuple[date, date]:
+        """The first and last day of a 52/53-week year, or of a quarter of one: 13 weeks, 14 for the
+        quarter that takes the extra week of a 53-week year."""
+        year = self.year
+        start = _week_year_end(year - 1, self._end_month, self._weeks) + timedelta(1)
+        end = _week_year_end(year, self._end_month, self._weeks)
+        if self._kind == "Y":
+            return start, end
+        q, extra = self.quarter, self._weeks[2] if (end - start).days == 370 else 0  # 0: a 52-week year
+        first = start + timedelta(weeks=13 * (q - 1) + (0 < extra < q))
+        return first, first + timedelta(weeks=13 + (q == extra), days=-1)
 
     # -- comparing ----------------------------------------------------------
     def __contains__(self, value: Any) -> bool:
@@ -153,13 +189,14 @@ class Period:
     def __eq__(self, other: object) -> bool:
         """Equal to the same period, or to its label."""
         if isinstance(other, Period):
-            return (self._end, self._kind, self._end_month) == (other._end, other._kind, other._end_month)
+            return ((self._end, self._kind, self._end_month, self._weeks)
+                    == (other._end, other._kind, other._end_month, other._weeks))
         if isinstance(other, str):
             return other == self.label
         return NotImplemented
 
     def __hash__(self) -> int:
-        return hash((self._end, self._kind, self._end_month))
+        return hash((self._end, self._kind, self._end_month, self._weeks))
 
     def __str__(self) -> str:
         return self.label
@@ -255,13 +292,15 @@ def period_range(start: str | date | None = None, end: str | date | None = None,
 
 # == helpers =================================================================
 
-def _end_index(value: str | date, kind: str, end_month: int) -> int:
+def _end_index(value: str | date, kind: str, end_month: int, weeks: Weeks | None = None) -> int:
     """The last month (year * 12 + month - 1) of the `kind` period that `value` names or holds."""
     if isinstance(value, Period):
         value = value.end_time
     if isinstance(value, datetime):
         value = value.date()
     if isinstance(value, date):
+        if weeks is not None:
+            return _week_containing(value, kind, end_month, weeks)
         return _containing(value.year * 12 + value.month - 1, kind, end_month)
     if not isinstance(value, str):
         raise DefinitionError(f"a period is a date or a string such as '2026-03', got {value!r}")
@@ -270,6 +309,8 @@ def _end_index(value: str | date, kind: str, end_month: int) -> int:
         month = int(m[2])
         if not 1 <= month <= 12:
             raise DefinitionError(f"period {value!r}: no month {month}")
+        if m[3] and weeks is not None:  # a day: the weeks that hold it may be named by the next month
+            return _week_containing(_date(s), kind, end_month, weeks)
         return _containing(int(m[1]) * 12 + month - 1, kind, end_month)
     if (m := re.fullmatch(r"(\d{4})Q([1-4])", s)) and kind == "Q":
         return int(m[1]) * 12 + end_month - 1 - (4 - int(m[2])) * 3
@@ -287,6 +328,28 @@ def _containing(month: int, kind: str, end_month: int) -> int:
 
 def _fiscal_year_end(month: int, end_month: int) -> int:
     return month + (end_month - 1 - month % 12) % 12
+
+
+def _week_year_end(year: int, end_month: int, weeks: Weeks) -> date:
+    """The last day of 52/53-week fiscal year `year`, as pandas' FY5253: the last of its weekday in
+    `end_month` ("LAST"), or the one nearest the month's last day ("NEAREST", maybe in the next month)."""
+    weekday, variation, _ = weeks
+    month_end = date(year, end_month, calendar.monthrange(year, end_month)[1])
+    back = (month_end.weekday() - weekday) % 7  # days back to the month's last such weekday
+    return month_end - timedelta(back if variation == "LAST" or back <= 3 else back - 7)
+
+
+def _week_containing(d: date, kind: str, end_month: int, weeks: Weeks) -> int:
+    """The month (year * 12 + month - 1) that names the 52/53-week year or quarter holding `d`."""
+    year = d.year - 1  # year d.year - 2 ends by 3 January of d.year - 1, before d
+    while _week_year_end(year, end_month, weeks) < d:
+        year += 1
+    end = year * 12 + end_month - 1
+    if kind == "Q":
+        end -= 9  # the first quarter, then on while d is past the quarter's end
+        while Period._at(end, kind, end_month, weeks, None).end_time < d:
+            end += 3
+    return end
 
 
 def _pandas_label(p: Period) -> str:

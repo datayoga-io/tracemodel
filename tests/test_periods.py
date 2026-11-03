@@ -50,7 +50,40 @@ def test_period_and_dates():
     assert p == "2026-03" and p != "2026-04" and p == tm.Period(date(2026, 3, 9))
 
 
-@pytest.mark.parametrize("freq", ["W", "M-SEP", "Q-XYZ", "2M", 12])
+@pytest.mark.parametrize("value, freq, label, start, end", [
+    ("2025", "Y-SEP-SAT-LAST", "2025", date(2024, 9, 29), date(2025, 9, 27)),     # Apple FY2025
+    ("2023", "Y-SEP-SAT-LAST", "2023", date(2022, 9, 25), date(2023, 9, 30)),     # 53 weeks
+    (date(2025, 9, 28), "Y-SEP-SAT-LAST", "2026", date(2025, 9, 28), date(2026, 9, 26)),
+    ("2024", "Y-JAN-SAT-NEAREST", "2024", date(2023, 1, 29), date(2024, 2, 3)),   # NRF 2023: 53 weeks
+    ("2024-02-03", "Y-JAN-SAT-NEAREST", "2024", date(2023, 1, 29), date(2024, 2, 3)),
+    ("2023Q1", "Q-SEP-SAT-LAST", "2023Q1", date(2022, 9, 25), date(2022, 12, 31)),  # 14 weeks: the extra one
+    ("2023Q2", "Q-SEP-SAT-LAST", "2023Q2", date(2023, 1, 1), date(2023, 4, 1)),
+    ("2025Q4", "Q-SEP-SAT-LAST", "2025Q4", date(2025, 6, 29), date(2025, 9, 27)),
+    ("2024Q4", "Q-JAN-SAT-NEAREST-4", "2024Q4", date(2023, 10, 29), date(2024, 2, 3)),  # retail: 14 weeks
+    ("2024Q1", "Q-JAN-SAT-NEAREST-4", "2024Q1", date(2023, 1, 29), date(2023, 4, 29)),
+])
+def test_52_53_week_period(value, freq, label, start, end):
+    p = tm.Period(value, freq)
+    assert (p.label, p.start_time, p.end_time, p.freq) == (label, start, end, freq)
+    assert p.days == (end - start).days + 1 and p.days % 7 == 0
+
+
+def test_52_53_week_dates():
+    fy = tm.Period("2025", "Y-SEP-SAT-LAST")
+    assert date(2025, 9, 27) in fy and date(2025, 9, 28) not in fy  # in calendar Y-SEP it would be
+    assert date(2025, 9, 28) > fy and date(2024, 9, 28) < fy
+    assert fy.overlap(date(2025, 9, 1), date(2025, 9, 30)) == 27 / 364
+    assert fy.asfreq("Q-SEP-SAT-LAST") == tm.Period("2025Q4", "Q-SEP-SAT-LAST")
+    q1 = tm.Period("2023Q1", "Q-SEP-SAT-LAST")
+    assert q1.overlap(date(2022, 12, 1), date(2023, 1, 31)) == 31 / 98 and date(2023, 1, 1) not in q1
+    assert q1.shift(4) == tm.Period("2024Q1", "Q-SEP-SAT-LAST") and q1.shift(4).days == 91
+    assert q1 != tm.Period("2023Q1", "Q-SEP") and q1 != tm.Period("2023Q1", "Q-SEP-SAT-LAST-4")
+    assert tuple(tm.period_range(date(2024, 2, 3), date(2024, 2, 4), freq="Q-JAN-SAT-NEAREST-4")) == (
+        "2024Q4", "2025Q1")
+
+
+@pytest.mark.parametrize("freq", ["W", "M-SEP", "Q-XYZ", "2M", 12, "Y-SEP-SAT", "Y-SEP-XYZ-LAST",
+                                  "Y-SEP-SAT-FIRST", "Y-SEP-SAT-LAST-4", "Q-SEP-SAT-LAST-5", "M-SEP-SAT-LAST"])
 def test_bad_freq(freq):
     with pytest.raises(tm.DefinitionError, match="freq"):
         tm.Period("2026-01", freq)
@@ -188,6 +221,33 @@ def test_save_and_load(m, tmp_path):
     data["dimensions"][0]["coords"][2] = "2026-04"
     with pytest.raises(tm.DefinitionError, match="don't match its time spine"):
         tm.Model.from_dict(data)
+
+
+def test_52_53_week_spine(tmp_path):
+    """A year's amount spread by day: a 53-week year has 371 days, and a date lands in its week's year."""
+    m = tm.Model()
+    m.add_dimension("fy", tm.period_range("2023", "2025", freq="Y-SEP-SAT-LAST", label="FY{year}"))
+    m.add_dimension("quarter", tm.period_range("2024Q1", periods=4, freq="Q-JAN-SAT-NEAREST-4"))
+    m.add_item("per_day", ())
+    m.add_item("ship_date", (), dtype="date")
+    m.add_item("spend", ("fy",), formula=lambda x: x["per_day"] * x.period.days)
+    m.add_item("shipped", ("fy",), dtype=int, formula=lambda x: int(x["ship_date"] in x.period))
+    with m.transaction():
+        m.set_value("per_day", {}, 10, SRC)
+        m.set_value("ship_date", {}, "2024-09-29", SRC)  # a Sunday: the first day of FY2025
+    assert [m.get("spend", fy=fy) for fy in ("FY2023", "FY2024", "FY2025")] == [3_710, 3_640, 3_640]
+    assert [m.get("shipped", fy=fy) for fy in ("FY2023", "FY2024", "FY2025")] == [0, 0, 1]
+
+    m.save(tmp_path / "model.json")
+    saved = {d["name"]: d for d in json.loads((tmp_path / "model.json").read_text())["dimensions"]}
+    assert saved["fy"]["time"] == {"freq": "Y-SEP-SAT-LAST", "first": "2023", "label": "FY{year}"}
+    assert saved["quarter"]["time"] == {"freq": "Q-JAN-SAT-NEAREST-4", "first": "2024Q1"}
+    again = tm.load(tmp_path / "model.json")
+    assert again.dimensions["quarter"].period("2024Q4").end_time == date(2024, 2, 3)
+    again.add_coords("fy", tm.period_range("2026", periods=1, freq="Y-SEP-SAT-LAST", label="FY{year}"))
+    assert again.dimensions["fy"].period("FY2026").start_time == date(2025, 9, 28)
+    with pytest.raises(tm.DefinitionError, match="can't add 'Y-SEP'"):
+        again.add_coords("fy", tm.period_range("2027", periods=1, freq="Y-SEP", label="FY{year}"))
 
 
 def test_excel_shows_each_periods_dates(m, tmp_path):

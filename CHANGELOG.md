@@ -33,6 +33,10 @@
   `tm.NIL`, and Excel writes it as text. Comparing text with a number now raises
   `DefinitionError` instead of being `False` or a `TypeError`.
 - `to_excel` nests every dim down in the first column, as a pivot table's compact form.
+- **52/53-week fiscal years:** `tm.period_range(..., freq="Y-SEP-SAT-LAST")` (Apple's, ending on
+  the last Saturday of September) or `"Y-JAN-SAT-NEAREST"` (retail), as pandas' `FY5253`, and
+  13-week quarters, `"Q-SEP-SAT-LAST"`, with the 53rd week in the first quarter or the one named
+  (`"Q-JAN-SAT-NEAREST-4"`). `start_time`, `end_time`, `days`, `in` and `overlap` use the weeks.
 
 ## 0.2.0 — 2026-10-15
 
