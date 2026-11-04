@@ -220,7 +220,8 @@ function memberListAll(d, partial) {
   if (isDt(d)) return dtMembers(d, partial).filter(function (c) { var p = Object.assign({}, strip(partial)); p[d] = c; return dtOk(p) && pickOk(p, d); });
   return membersFor(d, strip(partial)).filter(function (c) { var p = Object.assign({}, strip(partial)); p[d] = c; return dtOk(p) && pickOk(p, d); });
 }
-function memberLabel(d, c) { return d === IT ? c : isDt(d) ? dtLabel(d, c) : labelOf(d, c); }
+function titleOf(item) { return ITEMS[item] && ITEMS[item].description ? ITEMS[item].description : item; }
+function memberLabel(d, c) { return d === IT ? titleOf(c) : isDt(d) ? dtLabel(d, c) : labelOf(d, c); }
 function isDefined(item, v) { return v !== null && v !== undefined && !(ITEMS[item].zeroEmpty && v === 0); }
 function rawValue(item, co) { return ITEMS[item].kind === 'entered' ? entered(item, co) : get(item, co); }
 // Is any cell of the item under these coordinates defined? A value, or an explicit n/a. For a cash-flow cell, 0 means no payment, so it does not count.
@@ -814,7 +815,7 @@ function columnMenu(what, g) {
   var L = layoutFor(current), items = [];
   if (what.item) {
     var it = ITEMS[what.item], model = g.kind === 'model';
-    items.push({ label: 'Edit description and unit…', action: function () { openEditItem(what.item); } });
+    items.push({ label: 'Rename and set unit…', action: function () { openEditItem(what.item); } });
     if (it.kind === 'calc') items.push({ label: 'Edit formula…', action: function () { openEditFormula(what.item); } });
     items.push({ separator: true });
     if (model) items.push({ label: 'Add a column after this…', action: function () { startAddCol(g.dims, g.levels); } });
@@ -955,7 +956,7 @@ document.addEventListener('change', function (e) {
 
 function openEditItem(name) {
   var it = ITEMS[name];
-  openDialog('Edit ' + name, '<form id="dlg-form" class="dlg-form">' + field('Description', '<input id="f-desc" type="text" value="' + esc(it.description) + '" autocomplete="off">') +
+  openDialog('Edit ' + name, '<form id="dlg-form" class="dlg-form">' + field('Name', '<input id="f-desc" type="text" value="' + esc(it.description) + '" autocomplete="off">', 'What the column is called. The code, ' + esc(name) + ', stays the same.') +
     field('Unit', '<input id="f-unit" type="text" value="' + esc(it.unit) + '" autocomplete="off">') +
     '<div class="notice" id="dlg-err" hidden></div><div class="dlg-actions"><button type="button" class="btn" data-dlg-cancel>Cancel</button><button type="submit" class="btn primary">Save</button></div></form>',
     function (root) {
@@ -1013,8 +1014,8 @@ function renderDetail() {
   if (!sel) { el.innerHTML = '<p class="empty">Select a cell to see its source, or what it rests on.</p>'; return; }
   var it = ITEMS[sel.item], k = key(sel.item, sel.coords), d = DETAIL[k];
   var v = get(sel.item, sel.coords), isNA = entered(sel.item, sel.coords) === NA;
-  var html = '<div><span class="num" style="font-weight:600">' + sel.item + '</span> <span class="kind ' + it.kind + '">' + (it.kind === 'calc' ? 'calculated' : 'entered') + '</span>' + (it.ref ? ' <span class="kind">pointer to ' + it.ref + '</span>' : '') + '</div>' +
-    (it.description ? '<div class="sub">' + esc(it.description) + '</div>' : '') +
+  var html = '<div><span style="font-weight:600">' + esc(titleOf(sel.item)) + '</span> <span class="num sub" style="font-size:12px">' + sel.item + '</span> <span class="kind ' + it.kind + '">' + (it.kind === 'calc' ? 'calculated' : 'entered') + '</span>' + (it.ref ? ' <span class="kind">pointer to ' + it.ref + '</span>' : '') + '</div>' +
+    (it.note ? '<div class="sub">' + esc(it.note) + '</div>' : '') +
     trailHtml(sel.item, sel.coords) + coordChips(sel.coords, sel.item) +
     '<div class="big num">' + (isNA ? '<span class="na" style="color:var(--muted)">n/a</span> <span class="sub" style="font-size:13px;font-family:var(--font-body)">marked not applicable</span>' : v === null ? '<span class="none" style="color:var(--muted)">no value</span>' : show(v)) + (it.unit && v !== null ? ' <span class="sub" style="font-size:13px;font-family:var(--font-body)">' + esc(it.unit) + '</span>' : '') + '</div>';
   var bad = [];

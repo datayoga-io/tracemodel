@@ -35,7 +35,26 @@ DIMENSIONS: dict[str, list[tuple[str, str | None, dict[str, Any]]]] = {
     "milestone": [(m, None, {}) for m in ("Signing", "Permit", "Structure", "Handover")],
 }
 
-# (name, dims, dtype, unit, description). Entered unless a formula is given below.
+# What each item is called in the grid. The library keeps it as the item's description; the sentence that explains it,
+# written beside each item below, is kept as its `note`.
+TITLES = {
+    "project_name": "Project name", "project_location": "Location", "project_number": "Project number",
+    "vat_rate": "VAT rate", "site_area": "Site area", "fit_out_cost": "Fit-out cost",
+    "unit_count": "Unit count", "area_per_unit": "Area per unit", "price_per_sqm": "Price per sqm",
+    "milestone_date": "Milestone date", "contract_name": "Contract title", "contract_supplier": "Supplier",
+    "contract_signed": "Signed on", "contract_value": "Contract value", "engagement_project": "Project",
+    "engagement_contract": "Contract", "engagement_start": "Start date", "line_engagement": "Engagement",
+    "date_milestone": "Date milestone", "date_offset_days": "Days from milestone", "price_basis": "Price basis",
+    "price_rate": "Price rate", "area_total": "Total area", "sale_value": "Sale value", "payment_date": "Payment date",
+    "payment_amount": "Payment amount", "engagement_amount": "Engagement amount", "contract_committed": "Committed",
+}
+
+
+def _attrs(name: str, unit: str, note: str) -> dict[str, str] | None:
+    return {k: v for k, v in (("unit", unit), ("note", note)) if v} or None
+
+
+# (name, dims, dtype, unit, note). Entered unless a formula is given below.
 ENTERED: list[tuple[str, tuple[str, ...], Any, str, str]] = [
     ("project_name", ("project",), "str", "", "The project's name"),
     ("project_location", ("project",), "str", "", "Where the project is"),
@@ -165,9 +184,9 @@ def define(model: tm.Model) -> None:
     for name, entries in DIMENSIONS.items():
         model.add_dimension(name, [(c, d, a) for c, d, a in entries])
     for name, dims, dtype, unit, description in ENTERED:
-        model.add_item(name, dims, dtype, {"unit": unit} if unit else None, description=description)
+        model.add_item(name, dims, dtype, _attrs(name, unit, description), description=TITLES[name])
     for name, (formula, dims, dtype, unit, description) in FORMULAS.items():
-        model.add_item(name, dims, dtype, {"unit": unit} if unit else None, formula=formula, description=description)
+        model.add_item(name, dims, dtype, _attrs(name, unit, description), formula=formula, description=TITLES[name])
     for check_id, expect, dim, description in CHECKS:
         model.add_check(check_id, expect, coords={dim: tm.ANY}, description=description)
 
