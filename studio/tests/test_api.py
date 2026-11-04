@@ -51,6 +51,7 @@ def test_the_model_lists_dimensions_items_checks_and_views(client):
     amount = body["items"]["payment_amount"]
     assert amount["kind"] == "calc" and amount["formula"].startswith("lambda x:") and amount["dims"] == ["line"]
     assert body["items"]["milestone_date"]["dtype"] == "date"
+    assert body["dimensions"]["unit_type"]["title"] == "Unit type" and body["dimensions"]["project"]["title"] == "Project"
     assert body["items"]["site_area"]["description"] == "Site area"   # the name the grid shows
     assert body["items"]["site_area"]["note"] == "The plot the project is built on"
     assert {c["id"] for c in body["checks"]} == {"lines_have_terms", "milestones_dated", "within_contract_value"}

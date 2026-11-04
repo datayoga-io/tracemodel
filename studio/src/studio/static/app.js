@@ -4,7 +4,7 @@
 
 // ---- What the API gave: the definition, every cell, the checks ----
 var DEF = null, HEAD = '';
-var DIMS = {}, DESC = {}, ITEMS = {}, REFS = {}, DIM_ANC = {};
+var DIMS = {}, DESC = {}, ITEMS = {}, REFS = {}, DIM_ANC = {}, DIM_TITLE = {};
 var CELLS = {};            // item -> 'key|of|coords' -> { v, nil, err }
 var PENDING = new Set();   // 'item|key' of cells with changes not yet committed
 var CHANGES = 0;           // every uncommitted change: values, rows (members) and columns (items)
@@ -65,10 +65,10 @@ function buildSections(def) {
 }
 
 function load(def) {
-  DEF = def; DIMS = {}; DESC = {}; ITEMS = {};
+  DEF = def; DIMS = {}; DESC = {}; ITEMS = {}; DIM_TITLE = {};
   Object.keys(def.dimensions).forEach(function (d) {
     DIMS[d] = def.dimensions[d].labels.map(function (l) { return l.code; });
-    DESC[d] = {};
+    DESC[d] = {}; DIM_TITLE[d] = def.dimensions[d].title || '';
     def.dimensions[d].labels.forEach(function (l) { if (l.description) DESC[d][l.code] = l.description; });
   });
   Object.keys(def.items).forEach(function (n) {
@@ -191,7 +191,8 @@ var ALL = '__all';
 var IT = '__items';
 // An explicit "not applicable". It counts as defined, unlike a blank, and reads as no value in formulas.
 var NA = '__na';
-function dimName(d) { return d === IT ? 'Items' : d; }
+function dimName(d) { return d === IT ? 'Items' : DIM_TITLE[d] || d; }
+function dimNames(ds) { return ds.map(dimName); }
 function strip(co) { var o = Object.assign({}, co); delete o[IT]; return o; }
 // The members a row or column shows: those that agree with the coordinates above them, then the chip's filter.
 function memberList(d, partial) {
@@ -558,9 +559,9 @@ function eachRow(R, base, isCollapsed, emit, dense) {
       var p = Object.assign({}, partial); p[d] = c;
       if (dense && !definedAcross(Object.assign({}, base, p), layoutFor(current).columns)) return;
       var calc = d === IT && ITEMS[c].kind === 'calc' ? ' <span class="kind calc">calc</span>' : '';
-      if (last) { emit({ group: false, partial: p, label: memberLabel(d, c), extra: calc, depth: depth, tag: d === IT ? 'item' : d }); return; }
+      if (last) { emit({ group: false, partial: p, label: memberLabel(d, c), extra: calc, depth: depth, tag: d === IT ? 'item' : dimName(d) }); return; }
       var k = gkey(p);
-      emit({ group: true, partial: p, label: memberLabel(d, c), extra: calc, depth: depth, key: k, tag: d === IT ? 'item' : d });
+      emit({ group: true, partial: p, label: memberLabel(d, c), extra: calc, depth: depth, key: k, tag: d === IT ? 'item' : dimName(d) });
       if (!isCollapsed(k)) level(idx + 1, p, depth + 1);
     });
   }
@@ -706,7 +707,7 @@ function columnDefs(g, L, cols) {
     formatter: function (cell) {
       var d = cell.getData();
       if (d._ghost && isAddingRow(d)) return addRowHtml(d);
-      if (d._ghost) return '<span class="ghost-link">+ Add ' + esc(d._dim) + (Object.keys(d._ctx).length ? ' to ' + esc(d._ctx[lastKey(d._ctx)]) : '') + '</span>';
+      if (d._ghost) return '<span class="ghost-link">+ Add ' + esc(dimName(d._dim).toLowerCase()) + (Object.keys(d._ctx).length ? ' to ' + esc(d._ctx[lastKey(d._ctx)]) : '') + '</span>';
       return esc(d.label) + (d.extra || '') + (d.tag ? '<span class="lvl">' + esc(d.tag) + '</span>' : '');
     }
   }];
@@ -722,7 +723,7 @@ function columnDefs(g, L, cols) {
     if (!path.length) { level.push(leafDef(i, g.items.length === 1 ? g.items[0] : 'Value', g.items.length === 1 ? { item: g.items[0] } : null)); return; }
     path.forEach(function (c, depth) {
       var d = L.columns[depth], title = memberLabel(d, c) + (d === IT && ITEMS[c].kind === 'calc' ? ' <span class="kind calc">calc</span>' : '') +
-        (d === IT && levelsOn(g, L) ? '<small class="per">' + (ITEMS[c].dims.length ? 'per ' + ITEMS[c].dims.join(', ') : 'per model') + '</small>' : '');
+        (d === IT && levelsOn(g, L) ? '<small class="per">' + (ITEMS[c].dims.length ? 'per ' + dimNames(ITEMS[c].dims).join(', ').toLowerCase() : 'per model') + '</small>' : '');
       if (depth === path.length - 1) {
         var what = d === IT ? { item: c } : (g.items.length === 1 && !isRealDim(d) ? { item: g.items[0] } : (isRealDim(d) ? { dim: d, member: c } : null));
         level.push(leafDef(i, title, what)); return;
@@ -734,7 +735,7 @@ function columnDefs(g, L, cols) {
   });
   // a model table ends with a "+": a new column is a new item on its dimensions
   var plus = g.kind === 'model' ? [{ title: '+', field: 'plus', width: adding && adding.col ? (g.levels ? 470 : 330) : 48, headerSort: false, resizable: false, hozAlign: 'center', editable: false,
-    headerTooltip: 'Add a column: a new item on ' + g.dims.join(' · '), formatter: function () { return ''; },
+    headerTooltip: 'Add a column: a new item on ' + dimNames(g.dims).join(' · '), formatter: function () { return ''; },
     titleFormatter: function () { return adding && adding.col ? addColEl(g.dims, g.levels) : '+'; },
     headerClick: function (e) { if (!adding && !e.target.closest('.add-inline')) startAddCol(g.dims, g.levels); } }] : [];
   return defs.concat(top, plus);
@@ -802,11 +803,11 @@ function rowMenu(d) {
   var dim = d._dim, code = d._partial[dim], items = [], parent = {};
   if (!dim) return false;   // the model row has nothing to delete or hide
   Object.keys(d._partial).forEach(function (k) { if (k !== dim) parent[k] = d._partial[k]; });
-  if (d._childDim && isRealDim(d._childDim)) items.push({ label: 'Add ' + d._childDim + ' under ' + code + '…', action: function () { startAddRow(d._childDim, d._partial); } });
-  if (isRealDim(dim)) items.push({ label: 'Add another ' + dim + (Object.keys(parent).length ? ' to ' + parent[lastKey(parent)] : '') + '…', action: function () { startAddRow(dim, parent); } });
+  if (d._childDim && isRealDim(d._childDim)) items.push({ label: 'Add ' + dimName(d._childDim).toLowerCase() + ' under ' + code + '…', action: function () { startAddRow(d._childDim, d._partial); } });
+  if (isRealDim(dim)) items.push({ label: 'Add another ' + dimName(dim).toLowerCase() + (Object.keys(parent).length ? ' to ' + parent[lastKey(parent)] : '') + '…', action: function () { startAddRow(dim, parent); } });
   items.push({ separator: true });
   items.push({ label: 'Hide this row', action: function () { hideMember(dim, code); } });
-  if (isRealDim(dim)) items.push({ label: 'Delete ' + dim + ' ' + code + '…', action: function () { openDeleteMember(dim, code); } });
+  if (isRealDim(dim)) items.push({ label: 'Delete ' + dimName(dim).toLowerCase() + ' ' + code + '…', action: function () { openDeleteMember(dim, code); } });
   return items;
 }
 
@@ -823,10 +824,10 @@ function columnMenu(what, g) {
     items.push({ separator: true });
     items.push({ label: model ? 'Delete ' + what.item + '…' : 'Delete ' + what.item + ' (in its model table)', disabled: !model, action: function () { openDeleteItem(what.item); } });
   } else {
-    items.push({ label: 'Add another ' + what.dim + '…', action: function () { startAddRow(what.dim, {}); } });
+    items.push({ label: 'Add another ' + dimName(what.dim).toLowerCase() + '…', action: function () { startAddRow(what.dim, {}); } });
     items.push({ label: 'Hide this column', action: function () { hideMember(what.dim, what.member); } });
     items.push({ separator: true });
-    items.push({ label: 'Delete ' + what.dim + ' ' + what.member + '…', action: function () { openDeleteMember(what.dim, what.member); } });
+    items.push({ label: 'Delete ' + dimName(what.dim).toLowerCase() + ' ' + what.member + '…', action: function () { openDeleteMember(what.dim, what.member); } });
   }
   return items;
 }
@@ -871,7 +872,7 @@ function done(p, message) {
 }
 
 function openDeleteMember(dim, code) {
-  openDialog('Delete ' + dim + ' ' + code, '<p class="hint">Checking what depends on it…</p>');
+  openDialog('Delete ' + dimName(dim).toLowerCase() + ' ' + code, '<p class="hint">Checking what depends on it…</p>');
   api('GET', '/api/impact/member?dim=' + encodeURIComponent(dim) + '&code=' + encodeURIComponent(code)).then(function (r) {
     var blocked = r.pointed_by.length > 0, who = r.pointed_by.slice(0, 6).map(function (p) { return p.item + ' of ' + labelOf(Object.keys(p.coords)[0], Object.values(p.coords)[0]); }).join(', ') + (r.pointed_by.length > 6 ? ' and ' + (r.pointed_by.length - 6) + ' more' : '');
     document.getElementById('dlg-body').innerHTML =
@@ -906,7 +907,7 @@ function focusAdding() {
 function perText(sel, all) {
   if (!sel.length) return 'One value for the whole model. It shows on the Model row.';
   var rest = all.filter(function (d) { return sel.indexOf(d) < 0; });
-  return 'One value for each ' + sel.join(' and ') + (rest.length ? ', the same in every ' + rest.join(' and ') + '.' : '.');
+  return 'One value for each ' + dimNames(sel).join(' and ').toLowerCase() + (rest.length ? ', the same in every ' + dimNames(rest).join(' and ').toLowerCase() + '.' : '.');
 }
 function addColEl(dims, levels) {
   var types = [['float', 'Number'], ['int', 'Whole number'], ['str', 'Text'], ['date', 'Date']];
@@ -915,7 +916,7 @@ function addColEl(dims, levels) {
   var el = document.createElement('span');
   el.className = 'add-inline';
   el.innerHTML = '<input class="add-name" type="text" placeholder="New column" aria-label="Column name" autocomplete="off"><select class="add-type" aria-label="Type">' + opts + '</select>' +
-    (levels ? '<span class="add-per">One for each: ' + dims.map(function (d) { return '<label><input type="checkbox" class="add-dim" value="' + esc(d) + '" checked> ' + esc(d) + '</label>'; }).join(' ') +
+    (levels ? '<span class="add-per">One for each: ' + dims.map(function (d) { return '<label><input type="checkbox" class="add-dim" value="' + esc(d) + '" checked> ' + esc(dimName(d)) + '</label>'; }).join(' ') +
       '</span><span class="add-hint add-per-text">' + esc(perText(dims, dims)) + '</span>' : '') +
     '<span class="add-hint">Enter to add · Esc to cancel</span>';
   return el;

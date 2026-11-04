@@ -22,6 +22,9 @@ UNIT_USE = {"Studio": "residential", "2-bed": "residential", "3-bed": "residenti
             "Retail": "retail", "Penthouse": "residential"}
 BASES = ("fixed", "per_sqm_residential", "per_sqm_retail", "pct_of_sales")
 
+DIM_TITLES = {"project": "Project", "contract": "Contract", "engagement": "Engagement", "line": "Payment line",
+              "unit_type": "Unit type", "milestone": "Milestone"}
+
 DIMENSIONS: dict[str, list[tuple[str, str | None, dict[str, Any]]]] = {
     "project": [("PA", "Harbour Quarter", {}), ("PB", "Hillside Court", {})],
     "contract": [("C01", "Design services", {}), ("C02", "Main construction", {}), ("C03", "Sales and marketing", {})],
@@ -182,7 +185,7 @@ LINES = {"L01": ("E01", "Signing", 30, "fixed", 120), "L02": ("E01", "Permit", 0
 def define(model: tm.Model) -> None:
     """The dimensions, items and checks."""
     for name, entries in DIMENSIONS.items():
-        model.add_dimension(name, [(c, d, a) for c, d, a in entries])
+        model.add_dimension(name, [(c, d, a) for c, d, a in entries], title=DIM_TITLES.get(name))
     for name, dims, dtype, unit, description in ENTERED:
         model.add_item(name, dims, dtype, _attrs(name, unit, description), description=TITLES[name])
     for name, (formula, dims, dtype, unit, description) in FORMULAS.items():

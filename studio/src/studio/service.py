@@ -31,7 +31,7 @@ class Studio:
                 "title": self.title,
                 "branch": self.repo.branch,
                 "head": self.repo.head[:8],
-                "dimensions": {name: {"labels": [{"code": c, "description": d.descriptions.get(c), "attrs": dict(d.attrs(c))}
+                "dimensions": {name: {"title": d.title or "", "labels": [{"code": c, "description": d.descriptions.get(c), "attrs": dict(d.attrs(c))}
                                                  for c in d.coords]} for name, d in m.dimensions.items()},
                 "items": {name: _item(i) for name, i in m.items.items()},
                 "checks": [{"id": c.id, "description": c.description or ""} for c in m.checks.values()],
