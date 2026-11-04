@@ -230,7 +230,7 @@ class Studio:
 def _item(i: tm.Item) -> dict[str, Any]:
     dtype = "ref" if i.ref else {int: "int", float: "float", str: "str", date: "date", datetime: "datetime"}[i.dtype]
     return {"name": i.name, "dims": list(i.dims), "kind": "calc" if i.formula is not None else "entered",
-            "dtype": dtype, "ref": i.ref, "unit": i.attrs.get("unit", ""), "description": i.description or "",
+            "dtype": dtype, "ref": i.ref, "unit": i.attrs.get("unit", ""), "description": i.description or "", "note": i.attrs.get("note", ""),
             "formula": i.formula.source if i.formula is not None else None}
 
 
