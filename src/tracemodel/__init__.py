@@ -32,7 +32,7 @@ from .ops import Op
 from .periods import Period, PeriodRange, period_range
 from .repo import Approved, CommitInfo, Conflict, Conflicted, Rebased, Repo, Version
 from .table import Table
-from .values import NIL, Entry, Report, Trace
+from .values import NIL, Entry, Ref, Report, Trace
 
 
 def load(path: str | Path, allow_code: bool | None = None, formulas: str = "on") -> Model:
@@ -75,6 +75,7 @@ __all__ = [
     "Period",
     "PeriodRange",
     "Rebased",
+    "Ref",
     "Repo",
     "Report",
     "StaleRef",

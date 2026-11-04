@@ -292,6 +292,19 @@ class _Walk:
                 return getattr(self.bound(ref, fixed[:1]), name)(*fixed)
             if ref.cell is None:
                 raise self.fail(node, f"in a check, x is the run, not a cell: use x['item'].{name}(...)")
+            if name == "sel":  # .sel(dim=<a cell holding a label>): the label is known only at run time
+                dynamic = {k for k, v in kwargs.items() if isinstance(v, _Ref) or v is UNKNOWN}
+                if dynamic:
+                    for k in sorted(dynamic):
+                        v = kwargs[k]
+                        if isinstance(v, _Ref) and v.cell is not None and v.cell.item.dtype is not str:
+                            raise self.fail(node, f".sel({k}=...): {v.cell.item.name!r} is "
+                                                  f"{v.cell.item.dtype.__name__}, not a label; read a str item, "
+                                                  f"or one of type tm.Ref({k!r})")
+                        self.use(v)  # reads the cell that holds the label
+                    static = {k: self.known(v, node, ".sel()") for k, v in kwargs.items() if k not in dynamic}
+                    cell = ref.cell.sel(**static) if static else ref.cell
+                    return _Ref(cell.by_value(*sorted(dynamic)), root=False)
             fixed_args = [self.known(a, node, f".{name}()") for a in args]
             fixed_kwargs = {k: self.known(v, node, f".{name}()") for k, v in kwargs.items()}
             return _Ref(getattr(ref.cell, name)(*fixed_args, **fixed_kwargs), root=False)

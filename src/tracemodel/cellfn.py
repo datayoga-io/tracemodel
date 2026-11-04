@@ -115,8 +115,20 @@ class Bound(CellValue):
             raise DefinitionError(f"in a check, x is the run, not a cell: use x['item'].{method}(...)")
         return self._cell
 
-    def sel(self, **coords: str) -> Bound:
-        return self._wrap(self._own("sel").sel(**coords))
+    def sel(self, **coords: Any) -> Bound:
+        """Fix coords by label. A label may be a cell holding one: x["milestone_date"].sel(project=x["project"]),
+        for an item whose value is a label (see Item.ref); the cell is read, and traced."""
+        cell = self._own("sel")
+        labels = {}
+        for dim, label in coords.items():
+            if isinstance(label, Bound):
+                what = label._cell
+                label = label._get()
+                if not isinstance(label, str):
+                    raise DefinitionError(f".sel({dim}=...): {what!r} is {dates.kind(label)}, not a label of {dim!r}; "
+                                          "read an item of type tm.Ref or str")
+            labels[dim] = label
+        return self._wrap(cell.sel(**labels))
 
     def shift(self, **steps: int) -> Bound:
         return self._wrap(self._own("shift").shift(**steps))
