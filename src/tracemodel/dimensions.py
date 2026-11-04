@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import Any, Self
@@ -155,8 +154,17 @@ class Dimension:
     list of entries: "code", ("code", "description") or ("code", "description", {attrs}).
     """
 
-    def __init__(self, name: str, coords: Iterable[Entry] | Hierarchy | PeriodRange):
+    def __init__(self, name: str, coords: Iterable[Entry] | Hierarchy | PeriodRange, description: str | None = None,
+                 attrs: Mapping[str, Any] | None = None):
+        if description is not None and not isinstance(description, str):
+            raise DefinitionError(f"dimension {name!r}: description must be a string")
+        if attrs is not None and not isinstance(attrs, Mapping):
+            raise DefinitionError(f"dimension {name!r}: attrs must be a dict")
         self.name = name
+        self.description = description  # what people call it ("Unit type" for unit_type); the name stays what formulas use
+        # free-form facts about the dimension itself: "note" for prose, anything else for values a reader or
+        # an agent can use. (A label's own are `dim[label].attrs`.)
+        self.attrs: dict[str, Any] = dict(attrs or {})
         self.time: PeriodRange | None = coords if isinstance(coords, PeriodRange) else None
         if isinstance(coords, Hierarchy):
             self.hierarchy: Hierarchy | None = coords
@@ -189,18 +197,6 @@ class Dimension:
         """The label as an object: `dim["PA"].description`, `dim["PA"].attrs`."""
         self.require(label)
         return self.labels[self.index[label]]
-
-    def description(self, label: str) -> str:
-        """Deprecated: use `dim[label].description`."""
-        warnings.warn("Dimension.description(label) is deprecated; use dim[label].description",
-                      DeprecationWarning, stacklevel=2)
-        return self[label].description
-
-    def attrs(self, label: str) -> dict[str, Any]:
-        """Deprecated: use `dim[label].attrs`."""
-        warnings.warn("Dimension.attrs(label) is deprecated; use dim[label].attrs",
-                      DeprecationWarning, stacklevel=2)
-        return dict(self[label].attrs)
 
     def period(self, label: str) -> Period:
         """A time dimension's label as a Period, with its dates: start_time, end_time, days."""

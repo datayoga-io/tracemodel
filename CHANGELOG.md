@@ -4,8 +4,12 @@
 
 - **Labels are objects:** `dim["PA"]` returns a `tm.Label`, a `str` that also knows its `.description`, its read-only
   `.attrs` and its `.dimension`; `dim.labels` lists them. It compares, hashes and prints as its code, so it goes wherever a
-  label string does, and `dim.coords` stays plain text. `dim.description(label)` and `dim.attrs(label)` are deprecated:
-  use the label.
+  label string does, and `dim.coords` stays plain text.
+- **Dimension description and attrs:** a dimension has its own `description` (what people call it, "Unit type"; the name
+  stays what formulas use) and `attrs` (free-form facts about it), like an item and a label:
+  `add_dimension(name, coords, description=..., attrs=...)` and `update_dimension(name, description=..., attrs=...)`.
+  Saved with the model and versioned (`dimension.update`). **Breaking:** `dim.description(label)` and `dim.attrs(label)`
+  are gone; use `dim[label].description` and `dim[label].attrs`.
 - **Review:** an agent drafts on a branch (a repo opened with `self_approve=False`); a person
   reads it with `repo.review(branch)` (each change with its author, and the
   calculated cells it moves), changes it on the branch, rules with `repo.accept` / `reject` /
