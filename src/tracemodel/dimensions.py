@@ -5,7 +5,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Iterable, Mapping
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Self
 
 from .errors import DefinitionError, UnknownCoord
 from .periods import Period, PeriodRange
@@ -29,7 +29,7 @@ class Label(str):
     """
 
     def __new__(cls, code: str, dimension: str | None = None, description: str | None = None,
-                attrs: Mapping[str, Any] | None = None) -> Label:
+                attrs: Mapping[str, Any] | None = None) -> Self:
         self = super().__new__(cls, code)
         self.dimension = dimension  # the name of the dimension it belongs to
         self._description = description
