@@ -643,6 +643,13 @@ model.add_dimension("period", tm.period_range("2024", "2025", freq="Y-SEP", labe
 - **Frequencies** are pandas' period aliases: `"M"`; `"Q"` or `"Q-SEP"`, quarters of a fiscal
   year ending in September; `"Y"` or `"Y-SEP"`. A fiscal year is named by the year it ends in:
   with `"Y-SEP"`, `2025` runs from 1 October 2024 to 30 September 2025.
+- **52/53-week fiscal years** end on a weekday, as pandas' `FY5253` offset: `"Y-SEP-SAT-LAST"`
+  on the last Saturday of September (Apple's: `2025` runs from 29 September 2024 to 27 September
+  2025), `"Y-JAN-SAT-NEAREST"` on the Saturday nearest 31 January (the retail 4-5-4 calendar).
+  A year has 364 or 371 `days`. Its quarters, `"Q-SEP-SAT-LAST"`, are 13 weeks; in a 53-week
+  year the first quarter has 14, or the one named at the end, as `FY5253Quarter`'s
+  `qtr_with_extra_week`: `"Q-JAN-SAT-NEAREST-4"`. A year is named by the year of its month, as
+  with `"Y-JAN"`: the retail year ending 3 February 2024 is `2024` (the NRF calls it 2023).
 - **Labels** are strings in pandas' form (`"2026-03"`, `"2026Q1"`, `"2026"`), or `label=` with
   the fields `{year}`, `{quarter}` and `{month}`. Being strings, they work as any label: `lag`,
   `sel`, checks, saving, Excel. `.dt.to_period("M")` on a date gives the same strings.
@@ -664,8 +671,7 @@ model.add_item("milestone", ("month",),
 ```
 
 The definition file saves the spine as `"time": {"freq": "M", "first": "2026-01"}` beside the
-labels. Periods are calendar months, quarters and years;
-52/53-week fiscal years (Apple's ends on the last Saturday of September) aren't modelled.
+labels. Months of a 52/53-week year (4-4-5 weeks) aren't modelled.
 
 ### Not entered vs nil
 
