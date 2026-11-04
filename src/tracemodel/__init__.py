@@ -62,7 +62,7 @@ __all__ = [
     "Diff",
     "DimMismatch",
     "Dimension",
-    "Entry", "Ref",
+    "Entry",
     "Formula",
     "Hierarchy",
     "InvalidValue",
