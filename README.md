@@ -206,8 +206,11 @@ Every dimension, plain or hierarchy, lists its coords as entries of one of three
 | `(code, description, attrs)` | `("Q1", "First quarter", {"end": "2026-03-31"})` |
 
 `attrs` is a free-form dict. Use `None` as the description to give attrs only.
-`dim.description(label)` returns the description, falling back to the code (for a hierarchy,
-the last path segment); `dim.attrs(label)` returns the attrs, or `{}`.
+`dim[label]` returns the label as an object (`tm.Label`): `dim["Q1"].description` is its description,
+falling back to the code (for a hierarchy, the last path segment), and `dim["Q1"].attrs` its attrs,
+read-only, or `{}`. A `Label` is a `str`, so it compares, hashes and prints as its code and goes
+wherever a label string does; `dim.labels` lists them. (`dim.description(label)` and
+`dim.attrs(label)` still work and warn: use the label.)
 
 ### Hierarchy
 

@@ -41,13 +41,13 @@ def test_dimensions(empty):
 
 def test_coord_entries_string_or_tuple(empty):
     sales = empty.dimensions["sales_category"]
-    assert sales.description("/") == "Total"                                          # (code, description)
-    assert sales.description("/products/iphone") == "iphone"                          # plain path
+    assert sales["/"].description == "Total"                                          # (code, description)
+    assert sales["/products/iphone"].description == "iphone"                          # plain path
     period = empty.dimensions["period"]                                               # (code, description, attrs)
-    assert period.description("FY2025") == "Fiscal 2025"
-    assert period.attrs("FY2025") == {"end": "2025-09-27"}
-    assert sales.attrs("/services") == {}
-    assert tm.Dimension("d", ["a", ("b", "Bee")]).description("a") == "a"
+    assert period["FY2025"].description == "Fiscal 2025"
+    assert period["FY2025"].attrs == {"end": "2025-09-27"}
+    assert sales["/services"].attrs == {}
+    assert tm.Dimension("d", ["a", ("b", "Bee")])["a"].description == "a"
 
 
 @pytest.mark.parametrize("entry", [
@@ -709,7 +709,7 @@ def test_add_coords_appends_and_reexpands_any_checks(tmp_path):
     m.add_check("FEE", coords={"contract": tm.ANY, "period": tm.ANY}, expect=lambda x: x["fee"] >= 0)
     m.add_coords("period", [("FY2028", "Fiscal 2028", {"kind": "forecast"}), "FY2029"])
     assert m.dimensions["period"].coords[-2:] == ("FY2028", "FY2029")
-    assert m.dimensions["period"].attrs("FY2028") == {"kind": "forecast"}
+    assert m.dimensions["period"]["FY2028"].attrs == {"kind": "forecast"}
     assert len(m.checks["POS"].runs()) == 6 and len(m.checks["FIRST2"].runs()) == 2
     assert len(m.checks["FEE"].runs()) == 12
     assert m.get("revenue", period="FY2029") == pytest.approx(416_161 * 1.03 ** 4)

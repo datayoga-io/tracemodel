@@ -106,7 +106,7 @@ class Bound(CellValue):
     # reading other cells
     def __getitem__(self, key: str) -> Bound:
         model = self._model
-        if self._root and type(key) is str and key in model.items:  # x["revenue"], the common case
+        if self._root and isinstance(key, str) and key in model.items:  # x["revenue"], the common case
             return Bound(model, model[key], self._at, self._reads, False)
         return self._wrap(_item_or_label(model, self._cell, key, self._root))
 
@@ -140,7 +140,7 @@ class Bound(CellValue):
     def attrs(self, dim: str) -> dict:
         """The attrs of this cell's label along `dim`, e.g. x.attrs("period") -> {"kind": "forecast"}."""
         label = self._label(dim)
-        return dict(self._model.dimensions[dim].attrs(label))
+        return dict(self._model.dimensions[dim][label].attrs)
 
     def _hierarchy(self, dim: str, method: str):
         label = self._label(dim)

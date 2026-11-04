@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable, Mapping
+from types import MappingProxyType
 from typing import Any
 
 from .errors import DefinitionError, UnknownCoord
@@ -12,6 +14,38 @@ ROOT = "/"
 
 # A coord entry: "code", ("code", "description") or ("code", "description", {attrs}).
 Entry = str | tuple[str, str] | tuple[str, str | None, Mapping[str, Any]]
+
+
+class Label(str):
+    """A label of a dimension: a str that also knows its description and attrs.
+
+    It is its code as far as anything else can tell: it compares, hashes, sorts, prints and
+    formats as that text, so it goes wherever a label string is taken, and a plain string
+    finds it in a dict. `dim["PA"]` returns it; `dim.labels` lists them.
+
+        >>> unit = model.dimensions["unit_type"]["Studio"]
+        >>> unit.description, unit.attrs["beds"], unit.dimension
+        ("Studio apartment", 0, "unit_type")
+    """
+
+    def __new__(cls, code: str, dimension: str | None = None, description: str | None = None,
+                attrs: Mapping[str, Any] | None = None) -> Label:
+        self = super().__new__(cls, code)
+        self.dimension = dimension  # the name of the dimension it belongs to
+        self._description = description
+        self._attrs = dict(attrs or {})
+        return self
+
+    @property
+    def description(self) -> str:
+        """Its description; the code itself when it has none (a hierarchy: the last path segment)."""
+        return self._description if self._description is not None else str(self)
+
+    @property
+    def attrs(self) -> Mapping[str, Any]:
+        """Its attrs, e.g. {"end": "2025-09-27"}; empty when it has none. Read-only: change them with
+        add_coords."""
+        return MappingProxyType(self._attrs)
 
 
 class _Labels:
@@ -143,18 +177,30 @@ class Dimension:
             if not isinstance(c, str):
                 raise DefinitionError(f"dimension {name!r}: coord {c!r} must be a string")
         self.index: dict[str, int] = {c: i for i, c in enumerate(self.coords)}  # label -> position
+        self.labels: tuple[Label, ...] = tuple(  # the same labels as objects; `coords` stays plain text
+            Label(c, name, self._described(c), self.label_attrs.get(c)) for c in self.coords)
 
-    def description(self, label: str) -> str:
-        """The label's description; a hierarchy falls back to the last path segment."""
-        self.require(label)
+    def _described(self, label: str) -> str:
         if self.hierarchy:
             return self.hierarchy.description(label)
         return self.descriptions.get(label, label)
 
-    def attrs(self, label: str) -> dict[str, Any]:
-        """The label's attrs, e.g. {"end": "2025-09-27"}; empty when it has none."""
+    def __getitem__(self, label: str) -> Label:
+        """The label as an object: `dim["PA"].description`, `dim["PA"].attrs`."""
         self.require(label)
-        return self.label_attrs.get(label, {})
+        return self.labels[self.index[label]]
+
+    def description(self, label: str) -> str:
+        """Deprecated: use `dim[label].description`."""
+        warnings.warn("Dimension.description(label) is deprecated; use dim[label].description",
+                      DeprecationWarning, stacklevel=2)
+        return self[label].description
+
+    def attrs(self, label: str) -> dict[str, Any]:
+        """Deprecated: use `dim[label].attrs`."""
+        warnings.warn("Dimension.attrs(label) is deprecated; use dim[label].attrs",
+                      DeprecationWarning, stacklevel=2)
+        return dict(self[label].attrs)
 
     def period(self, label: str) -> Period:
         """A time dimension's label as a Period, with its dates: start_time, end_time, days."""
