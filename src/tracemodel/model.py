@@ -352,9 +352,10 @@ class Model:
 
     # == 1. dimensions ======================================================
     @_writes
-    def add_dimension(self, name: str, coords: Iterable[str] | Hierarchy) -> Dimension:
-        """Add a dimension. Re-adding the same definition (e.g. a re-run cell) is a no-op."""
-        dim = Dimension(name, coords)
+    def add_dimension(self, name: str, coords: Iterable[str] | Hierarchy, title: str | None = None) -> Dimension:
+        """Add a dimension. Re-adding the same definition (e.g. a re-run cell) is a no-op. `title` is
+        what people call it; the name stays what formulas use."""
+        dim = Dimension(name, coords, title)
         if name in self.dimensions:
             old = self.dimensions[name]
             if _definition(old) == _definition(dim):
@@ -362,6 +363,21 @@ class Model:
             raise DefinitionError(f"dimension {name!r} already exists with different coords, descriptions or attrs")
         self.dimensions[name] = dim
         self._emit("dimension.add", name, None, _dimension_data(dim))
+        return dim
+
+    @_writes
+    def set_dimension_title(self, name: str, title: str | None) -> Dimension:
+        """Change what people call a dimension (None clears it). Nothing else about it changes."""
+        if name not in self.dimensions:
+            raise UnknownCoord(f"no dimension {name!r}; declared: {', '.join(self.dimensions)}")
+        dim = self.dimensions[name]
+        if title is not None and not isinstance(title, str):
+            raise DefinitionError(f"dimension {name!r}: title must be a string")
+        if dim.title == title:
+            return dim
+        before = _dimension_data(dim)
+        dim.title = title
+        self._emit("dimension.update", name, before, _dimension_data(dim))
         return dim
 
     @_writes
@@ -395,7 +411,7 @@ class Model:
             return old
         all_entries = current + added
         dim = Dimension(name, entries if old.time is not None else Hierarchy(all_entries) if old.hierarchy
-                        else all_entries)
+                        else all_entries, old.title)
         checks = dict(self.checks)
         self.dimensions[name] = dim
         self._changed()
@@ -469,10 +485,10 @@ class Model:
             raise DefinitionError(f"can't remove {', '.join(gone)} from {name!r}: checks {', '.join(listed)} "
                                   "list them in coords; change or remove those checks first")
         if old.time is not None:
-            dim = Dimension(name, PeriodRange(old.time.periods[0], len(keep)))
+            dim = Dimension(name, PeriodRange(old.time.periods[0], len(keep)), old.title)
         else:
             entries = [_entry_tuple(old, c) for c in keep]
-            dim = Dimension(name, Hierarchy(entries) if old.hierarchy is not None else entries)
+            dim = Dimension(name, Hierarchy(entries) if old.hierarchy is not None else entries, old.title)
         with self._atomic():
             for key in [k for k, e in self._entries.items()
                         if name in self.items[k[0]].dims and e.coords[name] in gone]:
@@ -1174,7 +1190,7 @@ class Model:
             raise DefinitionError(f"not a tracemodel definition (format {data.get('format')!r}, expected {FORMAT!r})")
         model = cls()
         for d in data["dimensions"]:
-            model.add_dimension(d["name"], _dimension_from_data(d))
+            model.add_dimension(d["name"], _dimension_from_data(d), d.get("title"))
         with model.transaction():  # a formula may read an item saved after it
             for i in data["items"]:
                 formula = None
@@ -1457,7 +1473,7 @@ class Model:
 
 def _definition(dim: Dimension) -> tuple:
     time = dim.time.to_data() if dim.time is not None else None
-    return dim.coords, dim.hierarchy is not None, dim.descriptions, dim.label_attrs, time
+    return dim.coords, dim.hierarchy is not None, dim.descriptions, dim.label_attrs, time, dim.title
 
 
 FORMAT = "tracemodel/2"  # formulas saved as lambdas; "tracemodel/1" (0.1, expression text) still loads
@@ -1642,6 +1658,8 @@ def _value_from_data(data: Mapping[str, Any], formulas: str = "on", where: str =
 
 def _dimension_data(dim: Dimension) -> dict[str, Any]:
     data: dict[str, Any] = {"name": dim.name}
+    if dim.title is not None:
+        data["title"] = dim.title
     if dim.hierarchy is not None:
         data["hierarchy"] = True
     if dim.time is not None:

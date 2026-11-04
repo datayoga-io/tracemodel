@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Dimension titles:** `add_dimension(name, coords, title="Unit type")` and `set_dimension_title` give a dimension
+  the name people read; the name stays what formulas use. Saved with the model and versioned like an item's description.
 - **Review:** an agent drafts on a branch (a repo opened with `self_approve=False`); a person
   reads it with `repo.review(branch)` (each change with its author, and the
   calculated cells it moves), changes it on the branch, rules with `repo.accept` / `reject` /

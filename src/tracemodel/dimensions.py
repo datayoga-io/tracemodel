@@ -121,8 +121,11 @@ class Dimension:
     list of entries: "code", ("code", "description") or ("code", "description", {attrs}).
     """
 
-    def __init__(self, name: str, coords: Iterable[Entry] | Hierarchy | PeriodRange):
+    def __init__(self, name: str, coords: Iterable[Entry] | Hierarchy | PeriodRange, title: str | None = None):
+        if title is not None and not isinstance(title, str):
+            raise DefinitionError(f"dimension {name!r}: title must be a string")
         self.name = name
+        self.title = title  # what people call it ("Unit type" for unit_type); the name stays what formulas use
         self.time: PeriodRange | None = coords if isinstance(coords, PeriodRange) else None
         if isinstance(coords, Hierarchy):
             self.hierarchy: Hierarchy | None = coords
