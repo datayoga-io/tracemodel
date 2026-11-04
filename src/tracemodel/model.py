@@ -72,7 +72,7 @@ class AttrFilter:
 
     def labels(self, dim: Dimension) -> tuple[str, ...]:
         return tuple(c for c in dim.coords
-                     if all(k in dim.attrs(c) and dim.attrs(c)[k] == v for k, v in self.attrs.items()))
+                     if all(k in dim[c].attrs and dim[c].attrs[k] == v for k, v in self.attrs.items()))
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, AttrFilter) and other.attrs == self.attrs
@@ -1252,7 +1252,7 @@ class Model:
             lines.append(f"  {d.name}{' (hierarchy)' if d.hierarchy else ''}")
             width = max(len(c) for c in d.coords)
             for c in d.coords:
-                extra = "   ".join(x for x in (d.descriptions.get(c, ""), _kv(d.attrs(c))) if x)
+                extra = "   ".join(x for x in (d.descriptions.get(c, ""), _kv(d[c].attrs)) if x)
                 lines.append(f"    {c:<{width}}   {extra}".rstrip())
         lines.append("Items:")
         width = max((len(i.name) for i in self.items.values()), default=0)
@@ -1288,7 +1288,7 @@ class Model:
             raise DimMismatch(f"{line_item} takes coords for ({', '.join(item.dims)}): {'; '.join(parts)}")
         for d in item.dims:
             self.dimensions[d].require(coords[d])
-        full = {d: coords[d] for d in item.dims}
+        full = {d: str(coords[d]) for d in item.dims}  # a Label is stored as its plain text
         return (line_item, tuple(full.values())), full
 
     def _entry(self, line_item: str, coords: Mapping[str, str]) -> Entry:

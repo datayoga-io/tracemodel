@@ -33,6 +33,7 @@ from RestrictedPython import RestrictingNodeTransformer, compile_restricted
 from RestrictedPython.Guards import guarded_iter_unpack_sequence, guarded_unpack_sequence
 
 from . import dates
+from .dimensions import Label
 from .errors import DefinitionError
 from .periods import Period
 
@@ -279,10 +280,10 @@ def allow_attrs(cls: type, names: set[str] | frozenset[str]) -> None:
 
 def _getattr(obj: Any, name: str) -> Any:
     special = _CLASS_ATTRS.get(id(obj))
-    allowed = special[1] if special is not None and special[0] is obj else _ATTRS.get(type(obj))
+    allowed = special[1] if special is not None and special[0] is obj else _ATTRS.get(str if isinstance(obj, Label) else type(obj))
     if name.startswith("_") or allowed is None or name not in allowed:
         raise DefinitionError(f"a formula can't use .{name} on {_what(obj)}")
-    if type(obj) in (str, list, tuple):  # its methods walk it: lower(), split(), index(), ...
+    if type(obj) in (str, Label, list, tuple):  # its methods walk it: lower(), split(), index(), ...
         _ACTIVE[-1].charge(len(obj))
     return getattr(obj, name)
 

@@ -275,7 +275,7 @@ class _Writer:
         def label_row(r, d, label, level):
             dim = model.dimensions[d]
             depth = _depth(dim, label) + level + indent
-            c = ws.cell(r, 1, dim.description(label) or label)
+            c = ws.cell(r, 1, dim[label].description or label)
             c.alignment = xl.Alignment(horizontal="left", indent=depth)
             parent = level < len(outer) or bool(dim.hierarchy and dim.hierarchy.children(label))
             if parent:
@@ -332,7 +332,7 @@ class _Writer:
             parent = False
             for i, (d, label) in enumerate(zip(dims, key), start=1):
                 dim = model.dimensions[d]
-                c = ws.cell(r, i, dim.description(label) or label)
+                c = ws.cell(r, i, dim[label].description or label)
                 c.alignment = xl.Alignment(horizontal="left", indent=_depth(dim, label))
                 if dim.hierarchy and dim.hierarchy.children(label):
                     c.font, parent = self.BOLD, True
@@ -416,9 +416,9 @@ class _Writer:
         keys: list[str] = []
         for d in dims:
             for label in d.coords:
-                keys += [k for k in d.attrs(label) if k not in keys]
-        rows = [[d.name, label, d.description(label), d.hierarchy.parent(label) if d.hierarchy else None,
-                 _depth(d, label), *_dates(d, label), *(d.attrs(label).get(k) for k in keys)]
+                keys += [k for k in d[label].attrs if k not in keys]
+        rows = [[d.name, label, d[label].description, d.hierarchy.parent(label) if d.hierarchy else None,
+                 _depth(d, label), *_dates(d, label), *(d[label].attrs.get(k) for k in keys)]
                 for d in dims for label in d.coords]
         header = ["dimension", "label", "description", "parent", "depth", "start", "end", *keys]
         self._table(ws, "Dimensions", header, rows, {1: 22, 2: 44, 3: 50, 6: 12, 7: 12})

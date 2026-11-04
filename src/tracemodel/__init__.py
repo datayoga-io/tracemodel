@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import ops, review
 from .diff import Diff, diff
-from .dimensions import Dimension, Hierarchy
+from .dimensions import Dimension, Hierarchy, Label
 from .errors import (
     DefinitionError,
     DimMismatch,
@@ -67,6 +67,7 @@ __all__ = [
     "Hierarchy",
     "InvalidValue",
     "Item",
+    "Label",
     "LogError",
     "MissingValue",
     "Model",
