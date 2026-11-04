@@ -65,7 +65,23 @@ class ItemPatch(BaseModel):
 def sample_studio(author: str = "you") -> Studio:
     """The studio over the sample model, worked on by `author`."""
     repo = sample.build().as_author(author)
-    return Studio(repo, sample.TITLE, sample.TABLES, sample.VIEWS)
+    return Studio(repo, sample.TITLE, sample.VIEWS)
+
+
+SETTINGS = "studio.json"   # beside the repo's log: {"title": ..., "views": [...]}; the studio's own, not the model's
+
+
+def open_studio(path: str | Path, author: str = "you") -> Studio:
+    """The studio over the repo in directory `path` (made if it doesn't exist), worked on by `author`.
+
+    Its title and saved views come from `studio.json` in that directory; without one the title is
+    the directory's name and there are no views.
+    """
+    path = Path(path)
+    repo = tm.Repo.open(path, author)
+    settings = path / SETTINGS
+    data = json.loads(settings.read_text()) if settings.exists() else {}
+    return Studio(repo, data.get("title") or path.resolve().name, data.get("views", []))
 
 
 def create_app(studio: Studio | None = None) -> FastAPI:

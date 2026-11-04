@@ -10,6 +10,7 @@ uncommitted changes in a tracemodel `Repo`, until you commit them.
 cd studio
 uv run tracemodel-studio            # http://127.0.0.1:8000
 uv run tracemodel-studio --port 8765 --author "your name"
+uv run tracemodel-studio path/to/repo   # a repo made with tm.Repo.open; its title and views come from studio.json beside its log
 uv run pytest                       # the studio's tests
 ```
 
@@ -20,7 +21,7 @@ which the sample uses.
 
 | Path | What it is |
 | --- | --- |
-| `src/studio/sample.py` | The sample model, built in a repo as a short history of commits by three authors: the dimensions, items with their formulas, the checks, and the values with their sources. The grid's tables and saved views. |
+| `src/studio/sample.py` | The sample model, built in a repo as a short history of commits by three authors: the dimensions, items with their formulas, the checks, and the values with their sources. The studio's title and saved views for it (the tables come from the model). |
 | `src/studio/service.py` | What the grid asks of a model, as plain data. Everything goes through the library's public API, except one read of a calculated cell's exact reads (`Model._deps`), noted in the code. |
 | `src/studio/app.py` | The FastAPI app: the API below, and the page. |
 | `src/studio/static/` | The page: `index.html`, `app.css`, `app.js`. No build step, no framework. The grid is [Tabulator](https://tabulator.info) 6.4.0 (MIT), kept in `static/vendor/` so the page works offline. |

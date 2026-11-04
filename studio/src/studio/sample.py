@@ -19,7 +19,7 @@ import tracemodel as tm
 
 TITLE = "Development payment forecast"
 UNIT_USE = {"Studio": "residential", "2-bed": "residential", "3-bed": "residential",
-            "Retail": "retail", "Penthouse": "residential"}
+            "Retail": "retail", "Penthouse": "residential"}   # entered into the model as `unit_use`; the formulas read it there
 BASES = ("fixed", "per_sqm_residential", "per_sqm_retail", "pct_of_sales")
 
 DIM_TITLES = {"project": "Project", "contract": "Contract", "engagement": "Engagement", "line": "Payment line",
@@ -34,7 +34,7 @@ DIMENSIONS: dict[str, list[tuple[str, str | None, dict[str, Any]]]] = {
              ("L04", "Advance", {}), ("L05", "Structure complete", {}), ("L06", "Finishes complete", {}),
              ("L07", "Retention release", {}), ("L08", "Commission at handover", {}), ("L09", "Advance", {}),
              ("L10", "Structure complete", {}), ("L11", "Handover payment", {})],
-    "unit_type": [(u, None, {"use": use}) for u, use in UNIT_USE.items()],
+    "unit_type": [(u, None, {}) for u in UNIT_USE],
     "milestone": [(m, None, {}) for m in ("Signing", "Permit", "Structure", "Handover")],
 }
 
@@ -43,7 +43,7 @@ DIMENSIONS: dict[str, list[tuple[str, str | None, dict[str, Any]]]] = {
 TITLES = {
     "project_name": "Project name", "project_location": "Location", "project_number": "Project number",
     "vat_rate": "VAT rate", "site_area": "Site area", "fit_out_cost": "Fit-out cost",
-    "unit_count": "Unit count", "area_per_unit": "Area per unit", "price_per_sqm": "Price per sqm",
+    "unit_use": "Use", "unit_count": "Unit count", "area_per_unit": "Area per unit", "price_per_sqm": "Price per sqm",
     "milestone_date": "Milestone date", "contract_name": "Contract title", "contract_supplier": "Supplier",
     "contract_signed": "Signed on", "contract_value": "Contract value", "engagement_project": "Project",
     "engagement_contract": "Contract", "engagement_start": "Start date", "line_engagement": "Engagement",
@@ -65,6 +65,7 @@ ENTERED: list[tuple[str, tuple[str, ...], Any, str, str]] = [
     ("vat_rate", (), "float", "percent", "VAT on sales, one rate for the whole model"),
     ("site_area", ("project",), "float", "sqm", "The plot the project is built on"),
     ("fit_out_cost", ("unit_type",), "float", "thousands per sqm", "Fit-out cost per square metre, the same in every project"),
+    ("unit_use", ("unit_type",), "str", "", "What a unit type is used for: residential or retail"),
     ("unit_count", ("project", "unit_type"), "int", "units", "Units of a type in the project"),
     ("area_per_unit", ("project", "unit_type"), "float", "sqm", "Floor area of one unit"),
     ("price_per_sqm", ("project", "unit_type"), "float", "thousands per sqm", "Sale price per square metre"),
@@ -100,11 +101,11 @@ FORMULAS: dict[str, tuple[Callable[..., Any], tuple[str, ...], Any, str, str]] =
             x["price_rate"] if x["price_basis"] == "fixed"
             else x["price_rate"] * sum(
                 x["area_total"].sel(project=x["engagement_project"].sel(engagement=x["line_engagement"]), unit_type=u)
-                for u in x.labels("unit_type") if UNIT_USE[u] == "residential")
+                for u in x.labels("unit_type") if x["unit_use"].sel(unit_type=u) == "residential")
             if x["price_basis"] == "per_sqm_residential"
             else x["price_rate"] * sum(
                 x["area_total"].sel(project=x["engagement_project"].sel(engagement=x["line_engagement"]), unit_type=u)
-                for u in x.labels("unit_type") if UNIT_USE[u] == "retail")
+                for u in x.labels("unit_type") if x["unit_use"].sel(unit_type=u) == "retail")
             if x["price_basis"] == "per_sqm_retail"
             else x["price_rate"] / 100 * sum(
                 x["sale_value"].sel(project=x["engagement_project"].sel(engagement=x["line_engagement"]), unit_type=u)
@@ -142,6 +143,7 @@ SOURCES: dict[str, tuple[str, str, str]] = {
     "vat_rate": ("Tax ruling", "Section 2", "https://example.com/tax-ruling.pdf"),
     "site_area": ("Planning approval", "Table 1", "https://example.com/planning-approval.pdf"),
     "fit_out_cost": ("Pricing sheet", "Fit-out rates", "https://example.com/pricing-sheet-r2.xlsx"),
+    "unit_use": ("Sales brief", "Unit mix", "https://example.com/sales-brief.pdf"),
     "unit_count": ("Sales brief", "Unit mix", "https://example.com/sales-brief.pdf"),
     "area_per_unit": ("Planning approval", "Table 3", "https://example.com/planning-approval.pdf"),
     "price_per_sqm": ("Pricing sheet", "Revision 2", "https://example.com/pricing-sheet-r2.xlsx"),
@@ -185,7 +187,7 @@ LINES = {"L01": ("E01", "Signing", 30, "fixed", 120), "L02": ("E01", "Permit", 0
 def define(model: tm.Model) -> None:
     """The dimensions, items and checks."""
     for name, entries in DIMENSIONS.items():
-        model.add_dimension(name, [(c, d, a) for c, d, a in entries], title=DIM_TITLES.get(name))
+        model.add_dimension(name, [(c, d, a) for c, d, a in entries], description=DIM_TITLES.get(name))
     for name, dims, dtype, unit, description in ENTERED:
         model.add_item(name, dims, dtype, _attrs(name, unit, description), description=TITLES[name])
     for name, (formula, dims, dtype, unit, description) in FORMULAS.items():
@@ -204,6 +206,8 @@ def _commits() -> Iterator[tuple[str, str, Callable[[tm.Model], None]]]:
             set_(m, "project_name", {"project": p}, name)
             set_(m, "project_location", {"project": p}, location)
             set_(m, "project_number", {"project": p}, number)
+        for unit_type, use in UNIT_USE.items():
+            set_(m, "unit_use", {"unit_type": unit_type}, use)
         set_(m, "vat_rate", {}, 17)
         set_(m, "site_area", {"project": "PA"}, 5000)   # PB's is not known yet
         for unit_type, cost in zip(UNIT_USE, (1.0, 1.2, 1.2, 0.9)):
@@ -293,15 +297,8 @@ def _commits() -> Iterator[tuple[str, str, Callable[[tm.Model], None]]]:
 
 DIMENSIONS_PROJECTS = [c for c, _, _ in DIMENSIONS["project"]]
 
-# Views for the grid. A model table holds the items that share their dimensions, so it comes from the model;
-# a saved view is a layout over items from the tables, and holds no data of its own.
-TABLES = [
-    {"id": "quantities", "title": "Project quantities", "rows": ["project", "unit_type"], "levels": True},
-    {"id": "milestones", "title": "Milestones", "rows": ["project", "milestone"]},
-    {"id": "contracts", "title": "Contracts", "rows": ["contract"]},
-    {"id": "engagements", "title": "Engagements", "rows": ["engagement"]},
-    {"id": "lines", "title": "Payment lines", "rows": ["line"]},
-]
+# The studio's own settings for this model: its title, and the saved views (a layout over items, with no data of its own).
+# They are not part of the model; a saved model keeps them beside it in studio.json. The tables come from the model.
 VIEWS = [
     {"id": "cashflow", "title": "Cash flow", "items": ["payment_amount"],
      "preset": {"rows": ["line"], "columns": ["payment_date.dt.year", "payment_date.dt.month"],

@@ -4,9 +4,10 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
+from studio.app import create_app, open_studio, sample_studio
 
+import tracemodel as tm
 from studio import sample
-from studio.app import create_app, sample_studio
 
 
 @pytest.fixture
@@ -40,6 +41,14 @@ def test_the_sample_calculates_through_its_pointers():
     assert m.get("contract_committed", contract="C01") == pytest.approx(469)
 
 
+def test_what_a_unit_type_is_used_for_is_in_the_model_not_in_the_formulas():
+    m = sample.build().model
+    assert m.get("unit_use", unit_type="Retail") == "retail"
+    before = m.get("payment_amount", line="L03")  # priced per sqm of residential area
+    m.set_value("unit_use", {"unit_type": "Studio"}, "retail", sample._source("unit_use"))
+    assert m.get("payment_amount", line="L03") < before
+
+
 # == reading ==
 def test_the_model_lists_dimensions_items_checks_and_views(client):
     body = client.get("/api/model").json()
@@ -55,7 +64,8 @@ def test_the_model_lists_dimensions_items_checks_and_views(client):
     assert body["items"]["site_area"]["description"] == "Site area"   # the name the grid shows
     assert body["items"]["site_area"]["note"] == "The plot the project is built on"
     assert {c["id"] for c in body["checks"]} == {"lines_have_terms", "milestones_dated", "within_contract_value"}
-    assert [t["id"] for t in body["tables"]][:2] == ["quantities", "milestones"]
+    assert [t["id"] for t in body["tables"]][:2] == ["project-unit_type", "project-milestone"]
+    assert body["tables"][0]["title"] == "Project × Unit type"
     assert body["tables"][0]["levels"] is True   # the grid shows the model, each project and each unit type as rows
     assert body["items"]["vat_rate"]["dims"] == [] and body["items"]["fit_out_cost"]["dims"] == ["unit_type"]
     assert {v["id"] for v in body["views"]} == {"cashflow", "unitmix", "commitments"}
@@ -258,3 +268,19 @@ def test_a_formula_can_be_replaced_or_removed(client):
     assert cells(client)["cells"]["area_total"]["PA|Studio"]["v"] == 701
     assert client.patch("/api/items/area_total", json={"formula": "lambda x: x['nothing']"}).status_code == 422
     assert cells(client)["cells"]["area_total"]["PA|Studio"]["v"] == 701  # the refused one changed nothing
+
+
+# == opening a saved repo ==
+def test_a_saved_repo_opens_with_tables_found_from_its_model_and_its_own_settings(tmp_path):
+    path = tmp_path / "forecast"
+    repo = tm.Repo.open(path, "tester")
+    repo.model.add_dimension("region", ["N", "S"], "Region")
+    repo.model.add_dimension("year", ["2026", "2027"])
+    repo.model.add_item("target", ("region",), attrs={"unit": "units"})
+    repo.model.add_item("sales", ("region", "year"))
+    repo.commit("the model")
+    assert open_studio(path).title == "forecast"   # no studio.json yet
+    (path / "studio.json").write_text(json.dumps({"title": "Forecast", "views": sample.VIEWS[:1]}))
+    body = TestClient(create_app(open_studio(path))).get("/api/model").json()
+    assert body["title"] == "Forecast" and [v["id"] for v in body["views"]] == ["cashflow"]
+    assert [(t["title"], t["levels"]) for t in body["tables"]] == [("Region × year", True)]   # target is the region level of it

@@ -19,8 +19,8 @@ EDIT_SOURCE = {"document": "Studio edit", "section": "Grid", "url": "studio://gr
 class Studio:
     """A repo opened by one author, and the views on it that the grid needs."""
 
-    def __init__(self, repo: tm.Repo, title: str, tables: list[dict[str, Any]], views: list[dict[str, Any]]):
-        self.repo, self.title, self.tables, self.views = repo, title, tables, views
+    def __init__(self, repo: tm.Repo, title: str, views: list[dict[str, Any]]):
+        self.repo, self.title, self.views = repo, title, views
         self.lock = threading.RLock()
 
     # == what the model is ==
@@ -31,11 +31,11 @@ class Studio:
                 "title": self.title,
                 "branch": self.repo.branch,
                 "head": self.repo.head[:8],
-                "dimensions": {name: {"title": d.title or "", "labels": [{"code": c, "description": d.descriptions.get(c), "attrs": dict(d.attrs(c))}
-                                                 for c in d.coords]} for name, d in m.dimensions.items()},
+                "dimensions": {name: {"title": d.description or "", "attrs": dict(d.attrs), "labels": [{"code": l, "description": l.description, "attrs": dict(l.attrs)}
+                                                 for l in d.labels]} for name, d in m.dimensions.items()},
                 "items": {name: _item(i) for name, i in m.items.items()},
                 "checks": [{"id": c.id, "description": c.description or ""} for c in m.checks.values()],
-                "tables": self.tables,
+                "tables": tables_of(m),
                 "views": self.views,
             }
 
@@ -225,6 +225,35 @@ class Studio:
     def log(self) -> list[dict[str, Any]]:
         with self.lock:
             return [_commit(c) for c in self.repo.log()]
+
+
+def tables_of(m: tm.Model) -> list[dict[str, Any]]:
+    """The model's tables, found from its items: the items that share their dimensions make a table.
+
+    An item over fewer dimensions than a table's rows (a project's name, a rate for the whole model)
+    shows with the first table whose rows include all of them, as the model, project or unit-type
+    level of that table; a table with such levels has `levels` set. Dimensions no table includes
+    make a table of their own.
+    """
+    shapes: list[tuple[str, ...]] = []
+    for i in m.items.values():
+        if i.dims not in shapes:
+            shapes.append(i.dims)
+    wide = [d for d in shapes if len(d) > 1]
+    homes: dict[tuple[str, ...], tuple[str, ...]] = {}
+    for d in shapes:
+        home = d if d in wide else next((w for w in wide if all(x in w for x in d)), d)
+        homes[d] = home
+    tables: list[dict[str, Any]] = []
+    for d in shapes:
+        rows = homes[d]
+        if not rows:
+            continue  # items over no dimension, and no table to join: nothing to show them in
+        if any(t["rows"] == list(rows) for t in tables):
+            continue
+        tables.append({"id": "-".join(rows), "title": " × ".join(m.dimensions[x].description or x for x in rows), "rows": list(rows),
+                       "levels": any(homes[x] == rows and x != rows for x in shapes)})
+    return tables
 
 
 def _item(i: tm.Item) -> dict[str, Any]:
