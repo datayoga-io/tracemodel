@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from .model import Model
 
 KINDS = (
-    "dimension.add", "dimension.remove", "coords.add", "coords.remove",
+    "dimension.add", "dimension.update", "dimension.remove", "coords.add", "coords.remove",
     "item.add", "item.update", "item.remove", "check.set", "check.remove",
     "value.set", "value.clear",
 )
@@ -80,7 +80,9 @@ def apply(model: Model, op: Op) -> None:
 
     kind, key, old, new = op.kind, op.key, op.old, op.new
     if kind == "dimension.add":
-        model.add_dimension(key, _dimension_from_data(new))
+        model.add_dimension(key, _dimension_from_data(new), new.get("description"), new.get("attrs"))
+    elif kind == "dimension.update":
+        model.update_dimension(key, description=new.get("description"), attrs=new.get("attrs"))
     elif kind == "dimension.remove":
         model.remove_dimension(key)
     elif kind == "coords.add":

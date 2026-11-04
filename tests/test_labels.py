@@ -96,14 +96,13 @@ def test_a_formula_may_use_text_methods_on_a_label_it_reads():
     assert m.get("shout", unit_type="Studio") == "STUDIO"
 
 
-def test_the_old_methods_still_work_and_say_to_use_the_label(dim):
-    with pytest.warns(DeprecationWarning, match=r"dim\[label\]\.description"):
-        assert dim.description("Studio") == "Studio apartment"
-    with pytest.warns(DeprecationWarning, match=r"dim\[label\]\.attrs"):
-        assert dim.attrs("Studio") == {"beds": 0}
+def test_a_dimension_has_its_own_description_and_attrs_apart_from_its_labels():
+    d = tm.Dimension("unit_type", [("Studio", "Studio apartment", {"beds": 0})], "Unit type", {"note": "n"})
+    assert (d.description, dict(d.attrs)) == ("Unit type", {"note": "n"})
+    assert (d["Studio"].description, dict(d["Studio"].attrs)) == ("Studio apartment", {"beds": 0})
 
 
-def test_the_library_itself_does_not_use_the_old_methods(dim, tmp_path):
+def test_the_library_raises_no_deprecation_warnings(dim, tmp_path):
     m = tm.Model()
     m.add_dimension("unit_type", [("Studio", "Studio apartment", {"beds": 0}), "Retail"])
     m.add_item("count", ("unit_type",), formula=lambda x: x.attrs("unit_type").get("beds", 1))
