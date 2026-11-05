@@ -176,3 +176,18 @@ def test_a_third_dim_nests_in_the_first_column(tmp_path):
     assert earthworks[2].value == 10 and actual_rep[3].value == 12
     assert ws.row_dimensions[earthworks[0].row].outline_level == 3
     assert ws.row_dimensions[plan[0].row].outline_level == 0
+
+
+def test_extra_source_keys_get_columns_and_a_missing_source_is_said(tmp_path):
+    model = tm.Model()
+    model.add_dimension("year", ["FY24"])
+    model.add_item("a", ("year",))
+    model.add_item("b", ("year",))
+    model.set_value("a", {"year": "FY24"}, 1, {"document": "10-K", "page": 3, "bbox": [1, 2, 3, 4], "sha256": "ab"})
+    model.set_value("b", {"year": "FY24"}, 2)
+    model.to_excel(tmp_path / "m.xlsx")
+    ws = openpyxl.load_workbook(tmp_path / "m.xlsx")["Values"]
+    head = [c.value for c in ws[1]]
+    assert head[-2:] == ["bbox", "sha256"]
+    first, second = [[c.value for c in r] for r in ws.iter_rows(min_row=2)]
+    assert first[-2:] == ["[1, 2, 3, 4]", "ab"] and second[-2:] == [None, None]

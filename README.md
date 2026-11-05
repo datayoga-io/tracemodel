@@ -172,7 +172,7 @@ model = tm.Model()
 
 | Call | Does |
 | --- | --- |
-| `set_value(line_item, coords, value, source)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers; `str` items take text; date items take a date or an ISO string), or `tm.NIL` (see below), or a lambda (or its text, `"lambda x: ..."`, except on a `str` item, where text is the value): a formula for this one cell (see Formulas). The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
+| `set_value(line_item, coords, value, source=None)` | `coords` must give exactly one declared label for each of the item's dims. `value` must match the item's `dtype` (`int` items reject non-integers; `str` items take text; date items take a date or an ISO string), or `tm.NIL` (see below), or a lambda (or its text, `"lambda x: ..."`, except on a `str` item, where text is the value): a formula for this one cell (see Formulas). `source`: optional, see Source. The last write wins: setting a cell again replaces its value and source, and the old ones are kept in the entry's `history`. |
 | `clear_value(line_item, coords)` | Removes a cell's entered value, so it is not entered again (unlike `tm.NIL`, which says the source shows nothing). On a formula item, the item's formula calculates the cell again. |
 | `get(line_item, **coords)` | The value at full coords: a number, or a date for a date item (0 for a nil cell; `tm.NIL` for a nil date). |
 | `entry(line_item, **coords)` | With full coords: an `Entry` (`value`, `source`, `history`). With fewer coords: a `Table` of matching entries. |
@@ -193,8 +193,13 @@ model = tm.Model()
 | `tm.load(path, formulas="on")` | A model from a file written by `save`. Formulas are checked and compiled as when they were added; `formulas="off"` keeps them as text and runs none (see Saving a model). |
 | `to_dict()` / `tm.Model.from_dict(data, formulas="on")` | The same, as plain data. |
 
-**Source.** Every value needs a `source` dict with `document`, `url` and `section`;
-`page` and `quote` are optional. Other keys are rejected.
+**Source.** A value may carry a `source`: a dict saying where it came from, with any keys you
+choose, e.g. `{"document": "10-K", "page": 157, "bbox": [72, 100, 300, 120], "sha256": "ab12"}`.
+Values must be plain data (text, numbers, true/false, none, lists and dicts of those; write a date
+as ISO text), so a source saves and reloads as it was. It is optional and the library checks no
+key, so agree on yours; `entry()` and the Excel notes show `document`, `section` and `page`, and
+the Values sheet has a column for every key. Defining which keys are required, and what a model
+refuses (for example a manual entry with no source), is on the backlog.
 
 ### Coord entries
 

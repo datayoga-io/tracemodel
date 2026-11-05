@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import itertools
+import json
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from pathlib import Path
@@ -463,14 +464,17 @@ class _Writer:
         from .model import _is_formula
 
         dims = list(self.model.dimensions)
-        header = ["item", *dims, "value", "kind", "document", "section", "page", "quote", "url", "overrides_formula"]
+        known = ("document", "section", "page", "quote", "url")
+        extra = list(dict.fromkeys(k for e in self.model for k in e.source if k not in known))  # a column per other key
+        header = ["item", *dims, "value", "kind", *known, "overrides_formula", *extra]
         rows = []
         for e in self.model:
             kind = "nil" if e.value is NIL else "formula" if _is_formula(e.value) else "value"
             shown = f"= {e.value!r}" if kind == "formula" else e.value
             s = e.source
-            rows.append([e.item, *(e.coords.get(d) for d in dims), shown, kind, s.get("document"),
-                         s.get("section"), s.get("page"), s.get("quote"), s.get("url"), e.overrides_formula or None])
+            rows.append([e.item, *(e.coords.get(d) for d in dims), shown, kind, *(s.get(k) for k in known),
+                         e.overrides_formula or None,
+                         *(json.dumps(s[k]) if isinstance(s.get(k), (list, dict)) else s.get(k) for k in extra)])
         n = len(dims)
         self._table(ws, "Values", header, rows, {1: 32, n + 2: 16, n + 4: 40, n + 5: 50})
         for i, row in enumerate(rows, start=2):
@@ -520,9 +524,9 @@ def _state(model: Model, item: Item, full: Mapping[str, str]) -> tuple[Any, str 
         return None, None, None, key
     value = model._value(Cell(model, item, dict(full)), {})
     if e is not None and _is_formula(e.value):
-        return value, "cell_formula", f"= {e.value!r}\nSource: {_source(e.source)}", key
+        return value, "cell_formula", f"= {e.value!r}" + _source_note(e.source), key
     if e is not None:
-        note = f"Source: {_source(e.source)}"
+        note = f"Source: {_source(e.source)}" if e.source else "No source"
         if e.overrides_formula:
             return value, "override", f"{note}\nOverrides the formula: {item.formula!r}", key
         return value, "entered", note, key
@@ -576,9 +580,14 @@ def _title(item: Item) -> str:
     return item.description or item.name.replace("_", " ").capitalize()
 
 
+def _source_note(s: Mapping[str, Any]) -> str:
+    return f"\nSource: {_source(s)}" if s else ""
+
+
 def _source(s: Mapping[str, Any]) -> str:
-    text = ", ".join(str(s[k]) for k in ("document", "section") if s.get(k))
-    return text + (f", p. {s['page']}" if s.get("page") else "")
+    from .model import _source_text
+
+    return _source_text(s)
 
 
 def _nesting(model: Model, down: list[str]) -> list[str]:

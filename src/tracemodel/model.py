@@ -39,8 +39,6 @@ from .periods import PeriodRange
 from .table import Table
 from .values import (
     NIL,
-    SOURCE_OPTIONAL,
-    SOURCE_REQUIRED,
     CellRead,
     CheckResult,
     Entry,
@@ -48,6 +46,7 @@ from .values import (
     Report,
     Trace,
     _Nil,
+    plain_source,
 )
 
 DTYPES = {"int": int, "float": float, "str": str, "string": str, **dates.DTYPE_NAMES}
@@ -998,11 +997,12 @@ class Model:
     # == 4. values ==========================================================
     @_writes
     def set_value(
-        self, line_item: str, coords: Mapping[str, str], value: float, source: Mapping[str, Any]
+        self, line_item: str, coords: Mapping[str, str], value: float, source: Mapping[str, Any] | None = None
     ) -> None:
-        """Enter a value with its source. The last write wins; the value it replaces, and that
-        value's source, are kept in the entry's history. On a formula item it overrides the
-        formula for this cell.
+        """Enter a value, optionally with its source: a dict of plain data saying where it came
+        from, with whatever keys the model's users agree on (document, page, bbox, ...). The last
+        write wins; the value it replaces, and that value's source, are kept in the entry's
+        history. On a formula item it overrides the formula for this cell.
 
         `value` may be a lambda of x, or its source text ("lambda x: ..."): a formula for this
         one cell, e.g. a contract's escalator, sourced like any value.
@@ -1014,14 +1014,15 @@ class Model:
             value = self._as_formula(value, f"{line_item}{_fmt(full)}: formula")
         if item.dtype in dates.TEMPORAL and value is not NIL and not _is_formula(value):
             value = dates.coerce(item.dtype, value, f"{line_item}{_fmt(full)}")
-        self._validate(item, value, source)
+        self._validate(item, value)
+        source = plain_source(source)
         previous = self._entries.get(key)
         if previous is not None:
-            self._entries[key] = Entry(line_item, full, value, dict(source),
+            self._entries[key] = Entry(line_item, full, value, source,
                                        [*previous.history, (previous.value, previous.source)],
                                        previous.overrides_formula)
         else:
-            self._entries[key] = Entry(line_item, full, value, dict(source),
+            self._entries[key] = Entry(line_item, full, value, source,
                                        overrides_formula=item.formula is not None)
         self._value_changed(key)
         if item.formula is not None or _is_formula(value) or (previous is not None and _is_formula(previous.value)):
@@ -1278,7 +1279,7 @@ class Model:
                 if line.strip():
                     row = json.loads(line)
                     value = _value_from_data(row, formulas, f"{row['line_item']}{_fmt(row['coords'])}: formula")
-                    self.set_value(row["line_item"], row["coords"], value, row["source"])
+                    self.set_value(row["line_item"], row["coords"], value, row.get("source"))
 
     # == display ============================================================
     def __repr__(self) -> str:
@@ -1453,7 +1454,7 @@ class Model:
         except (Missing, ZeroDivisionError):
             return None
 
-    def _validate(self, item: Item, value: object, source: object) -> None:
+    def _validate(self, item: Item, value: object) -> None:
         if value is NIL or _is_formula(value) or item.dtype in dates.TEMPORAL:  # dates: set_value coerced it
             pass
         elif item.dtype is str:
@@ -1468,15 +1469,6 @@ class Model:
             raise InvalidValue(f"{item.name}: value must be a number, got {value!r}")
         elif item.dtype is int and not isinstance(value, int):
             raise InvalidValue(f"{item.name} is int; got {value!r}")
-        if not isinstance(source, Mapping):
-            raise InvalidValue(f"source must be a dict with {', '.join(SOURCE_REQUIRED)}")
-        missing = [k for k in SOURCE_REQUIRED if not str(source.get(k) or "").strip()]
-        extra = [k for k in source if k not in SOURCE_REQUIRED + SOURCE_OPTIONAL]
-        if missing or extra:
-            problems = ([f"missing {', '.join(missing)}"] if missing else []) + (
-                [f"unknown {', '.join(extra)}"] if extra else []
-            )
-            raise InvalidValue(f"source: {'; '.join(problems)}")
 
 
 def _definition(dim: Dimension) -> tuple:
@@ -1748,8 +1740,11 @@ def _kv(attrs: Mapping[str, Any]) -> str:
 
 
 def _source_text(source: Mapping[str, Any]) -> str:
-    text = f"{source['document']}, {source['section']}"
-    return text + (f", p. {source['page']}" if source.get("page") else "")
+    """A source as one line: its document and section, and page, else whatever keys it has."""
+    parts = [str(source[k]) for k in ("document", "section") if source.get(k)]
+    if source.get("page"):
+        parts.append(f"p. {source['page']}")
+    return ", ".join(parts) or _kv(source)
 
 
 def _fmt(coords: Mapping[str, str]) -> str:
