@@ -114,7 +114,7 @@ def apply(model: Model, op: Op) -> None:
     elif kind == "check.remove":
         model.remove_check(key)
     elif kind == "value.set":
-        model.set_value(key["item"], key["coords"], _value_from_data(new), new["source"])
+        model.set_value(key["item"], key["coords"], _value_from_data(new), new.get("source"))
     elif kind == "value.clear":
         model.clear_value(key["item"], key["coords"])
     else:

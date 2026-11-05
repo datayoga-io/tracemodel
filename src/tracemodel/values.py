@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
 from . import dates
-from .errors import UnknownCoord
+from .errors import InvalidValue, UnknownCoord
 from .table import Table, _fmt
 
 if TYPE_CHECKING:
@@ -25,8 +26,32 @@ class Ref:
     dim: str
 
 
-SOURCE_REQUIRED = ("document", "url", "section")
-SOURCE_OPTIONAL = ("page", "quote")
+def plain_source(source: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A value's source as a copy of plain data: any text keys, with values of text, numbers,
+    true/false, none, lists and dicts of those (a tuple becomes a list), so it saves and reloads
+    as it was. A value with no source has an empty one."""
+    if source is None:
+        return {}
+    if not isinstance(source, Mapping):
+        raise InvalidValue(f"source must be a dict of plain data, got {source!r}")
+    return {_key(k): _plain(v, f"source[{k!r}]") for k, v in source.items()}
+
+
+def _key(k: Any) -> str:
+    if not isinstance(k, str):
+        raise InvalidValue(f"source keys must be text, got {k!r}")
+    return k
+
+
+def _plain(v: Any, where: str) -> Any:
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, (list, tuple)):
+        return [_plain(x, where) for x in v]
+    if isinstance(v, Mapping):
+        return {_key(k): _plain(x, where) for k, x in v.items()}
+    raise InvalidValue(f"{where} is {v!r}: a source holds text, numbers, true/false, none, lists and dicts of those"
+                       " (write a date as ISO text)")
 
 
 class _Nil:

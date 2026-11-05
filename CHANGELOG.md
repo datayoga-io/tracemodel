@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A source is free plain data, and optional:** `set_value(..., source=None)` takes a dict with any keys
+  (`page`, `bbox`, `sha256`, ...) whose values are text, numbers, true/false, none, lists and dicts of those, so
+  structured facts no longer need packing into `section` as text. It is copied, saved and reloaded as it was. The
+  Excel Values sheet gets a column per extra key. **Breaking:** `document`, `url` and `section` are no longer
+  required and unknown keys are no longer rejected; a source that isn't plain data (a date object, say) raises
+  `InvalidValue`. A schema for sources and a policy on them are on the backlog.
+
 - **Labels are objects:** `dim["PA"]` returns a `tm.Label`, a `str` that also knows its `.description`, its read-only
   `.attrs` and its `.dimension`; `dim.labels` lists them. It compares, hashes and prints as its code, so it goes wherever a
   label string does, and `dim.coords` stays plain text.

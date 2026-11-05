@@ -4,6 +4,7 @@ import json
 import math
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -231,16 +232,30 @@ def test_set_value_last_write_wins(model):
     ("earnings_per_share", True, SO),
     ("shares_basic", 14_948_500.5, SO),                       # int item
     ("earnings_per_share", 7.49, "10-K"),                     # source not a dict
-    ("earnings_per_share", 7.49, {"document": "10-K"}),       # missing url, section
-    ("earnings_per_share", 7.49, SO | {"author": "x"}),       # unknown key
+    ("earnings_per_share", 7.49, SO | {"when": date(2025, 9, 27)}),  # not plain data
+    ("earnings_per_share", 7.49, SO | {"by": object()}),
+    ("earnings_per_share", 7.49, {1: "x"}),                   # keys are text
 ])
 def test_set_value_rejects_bad_value_or_source(empty, item, value, source):
     with pytest.raises(tm.InvalidValue):
         empty.set_value(item, {"period": "FY2025"}, value, source)
 
 
-def test_source_accepts_page_and_quote(empty):
-    empty.set_value("earnings_per_share", {"period": "FY2025"}, 7.49, SO | {"page": 28, "quote": "Basic $ 7.49"})
+def test_a_source_is_free_plain_data_and_optional(empty, tmp_path):
+    at = {"period": "FY2025"}
+    src = SO | {"page": 28, "bbox": (72, 100.5, 300, 120), "sha256": "ab12", "extra": {"ok": [1, None, True]}}
+    empty.set_value("earnings_per_share", at, 7.49, src)
+    assert empty.entry("earnings_per_share", **at).source == src | {"bbox": [72, 100.5, 300, 120]}  # a copy, tuple as list
+    src["page"] = 99
+    assert empty.entry("earnings_per_share", **at).source["page"] == 28
+    empty.set_value("earnings_per_share", at, 7.5)                      # no source at all
+    empty.set_value("shares_basic", at, 1, {})
+    e = empty.entry("earnings_per_share", **at)
+    assert e.source == {} and e.history[0][1]["bbox"] == [72, 100.5, 300, 120]
+    empty.to_jsonl(tmp_path / "v.jsonl")
+    again = tm.Model.from_dict(empty.to_dict())
+    again.load_jsonl(tmp_path / "v.jsonl")
+    assert again.entry("earnings_per_share", **at).source == {}
 
 
 def test_entry_without_coords_is_a_table(model):
