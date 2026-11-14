@@ -405,7 +405,7 @@ dimension, for one that isn't a hierarchy.
 - A run fails with `error` set, instead of `check()` raising, when a cell it reads can't be calculated: say a formula's `lag` before the first period, or an `int` formula that gives a fraction.
 - A missing value fails the check that reads it; it is never treated as 0.
 - Each run's result: `pass`, `FAIL`, `missing`, or for a warning check `warn` / `warn: missing`.
-- `Table`: `columns`, `rows`, `title`, `to_records()`, `show()`. Renders as HTML in Jupyter and as aligned text elsewhere.
+- `Table`: `columns`, `rows`, `title`, `to_records()`, `to_pandas()` (needs `pip install "pytracemodel[pandas]"`), `show()`. Renders as HTML in Jupyter and as aligned text elsewhere.
 
 ### Formulas
 

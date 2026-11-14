@@ -32,6 +32,15 @@ class Table:
     def to_records(self) -> list[dict[str, Any]]:
         return [dict(zip(self.columns, r)) for r in self.rows]
 
+    def to_pandas(self):
+        """The table as a pandas DataFrame, one column per table column. Needs pandas:
+        pip install "pytracemodel[pandas]"."""
+        try:
+            import pandas as pd
+        except ImportError:
+            raise ImportError('Table.to_pandas needs pandas: pip install "pytracemodel[pandas]"') from None
+        return pd.DataFrame(self.rows, columns=self.columns)
+
     def __len__(self) -> int:
         return len(self.rows)
 
