@@ -31,6 +31,7 @@ Issues = "https://github.com/datayoga-io/tracemodel/issues"
 
 [project.optional-dependencies]
 excel = ["openpyxl>=3.1"]  # model.to_excel
+pandas = ["pandas>=2"]  # Table.to_pandas
 
 [build-system]
 requires = ["hatchling>=1.27"]
