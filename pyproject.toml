@@ -28,6 +28,8 @@ classifiers = [
 Homepage = "https://github.com/datayoga-io/tracemodel"
 Repository = "https://github.com/datayoga-io/tracemodel"
 Issues = "https://github.com/datayoga-io/tracemodel/issues"
+Changelog = "https://github.com/datayoga-io/tracemodel/blob/main/CHANGELOG.md"
+"Colab notebook" = "https://colab.research.google.com/github/datayoga-io/tracemodel/blob/main/apple.ipynb"
 
 [project.optional-dependencies]
 excel = ["openpyxl>=3.1"]  # model.to_excel
