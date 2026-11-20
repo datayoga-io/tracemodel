@@ -17,63 +17,55 @@ pip install "pytracemodel[excel]"    # with model.to_excel
 
 Python 3.12 or later, one dependency. [Install notes](https://datayoga-io.github.io/tracemodel/install/).
 
-**In 30 seconds.** tracemodel keeps the numbers of a financial model together with where each one came from, and
-checks them against rules you declare. When a rule fails, it shows which numbers broke it and their sources, so a
-person can find the mistake and fix it. Here is a small case: revenue from a sales report, for Q1 and Q2, as a total
-and as North and South, with the rule that the total equals North + South. The code defines the model, enters the
-numbers with their source, and runs the check.
+**In 30 seconds.** tracemodel keeps the numbers of a financial model together with where each one came from.
+You declare the axes of the model (dimensions), what you measure (items), and enter the numbers (values) with their
+source. A formula calculates the rest.
 
 ```python
 import tracemodel as tm
 
 model = tm.Model()
 model.add_dimension("period", ["Q1", "Q2"])
-model.add_dimension("region", tm.Hierarchy(["/", "/north", "/south"]))
+model.add_dimension("region", ["north", "south"])
+
+# Items: what we measure, and over which dimensions. profit is calculated, not entered.
 model.add_item("revenue", dims=("region", "period"), dtype=float)
+model.add_item("cost", dims=("region", "period"), dtype=float)
+model.add_item("profit", dims=("region", "period"), dtype=float, formula=lambda x: x["revenue"] - x["cost"])
 
-# The rule: in every period, the total equals North + South, give or take 0.5 for rounding.
-model.add_check(
-    "DQ-1",
-    coords={"period": tm.ANY},
-    expect=lambda x: abs(x["revenue"]["/"] - (x["revenue"]["/north"] + x["revenue"]["/south"])) <= 0.5,
-)
-
-# The numbers from the sales report (Q1, Q2), each entered with where it came from.
+# Facts: each number is entered with where it came from.
 source = {"document": "Q2 sales report", "page": 4}
-for region, q1, q2 in [("/", 1200, 1350), ("/north", 700, 760), ("/south", 500, 545)]:
-    model.set_value("revenue", {"region": region, "period": "Q1"}, q1, source)
-    model.set_value("revenue", {"region": region, "period": "Q2"}, q2, source)
+facts = {("north", "Q1"): (700, 450), ("north", "Q2"): (760, 480),
+         ("south", "Q1"): (500, 320), ("south", "Q2"): (545, 350)}
+for (region, period), (revenue, cost) in facts.items():
+    model.set_value("revenue", {"region": region, "period": period}, revenue, source)
+    model.set_value("cost", {"region": region, "period": period}, cost, source)
 
-report = model.check()
-report.show()
 ```
 
-```text
-1/2 check runs passed
-check  coords     result  left  rule  right  diff
-DQ-1   period=Q1  pass       0  <=      0.5  -0.5
-DQ-1   period=Q2  FAIL      45  <=      0.5  44.5
-```
-
-The rule ran once for each period. Q1 passes. Q2 fails: the total is 1,350, but North + South is 760 + 545 = 1,305.
-`left` is the gap between the total and the sum of its parts, and `right` is the gap the rule allows. To see why, ask
-for an explanation:
+Now read the model:
 
 ```python
-print(report.filter(period="Q2").explain())
+model.get("profit", region="north", period="Q2")   # 280, calculated from revenue and cost
+model.table("profit")                              # regions down, periods across
+model.entry("revenue", region="north", period="Q2").source   # where an entered number came from
 ```
 
 ```text
-DQ-1  period=Q2  FAIL  left 45  <=  right 0.5  diff 44.5
-    abs(x['revenue']['/'] - (x['revenue']['/north'] + x['revenue']['/south'])) <= 0.5
-      revenue[region=/, period=Q2] = 1,350
-      revenue[region=/north, period=Q2] = 760
-      revenue[region=/south, period=Q2] = 545
+280
+
+profit
+region   Q1   Q2
+north   250  280
+south   180  195
+
+{'document': 'Q2 sales report', 'page': 4}
 ```
 
-`explain()` shows the rule and every cell it read. Each value carries its source, so a reviewer opens page 4 of the
-sales report and fixes the number that is wrong. The full model is built step by step in [Example](https://datayoga-io.github.io/tracemodel/example/). To run a
-complete model of Apple's FY2024–FY2025 10-K, open
+Every number has an address (item, region, period), an entered number has a source, and a calculated number has the
+formula that made it. You can also declare rules the numbers must obey, such as "the total equals North + South", and
+the model checks them and shows which numbers broke a rule; see [Data quality](https://datayoga-io.github.io/tracemodel/reference/checks/). A complete model is built step by step in
+[Example](https://datayoga-io.github.io/tracemodel/example/). To run a model of Apple's FY2024–FY2025 10-K, open
 [apple.ipynb in Colab](https://colab.research.google.com/github/datayoga-io/tracemodel/blob/main/apple.ipynb).
 
 **Compared with Excel and pandas.**
