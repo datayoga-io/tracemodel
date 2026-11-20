@@ -1095,6 +1095,41 @@ class Model:
         ]
         return Table([*item.dims, "value", "source", "replaced"], rows, title=f"{line_item} entries")
 
+    def cells(self, items: Iterable[str] | None = None, /, **coords: str) -> Table:
+        """Many cells at once, one row each: columns item, coords, value, kind ("entered", "calculated" or "missing")
+        and source. `items` names the items to read (default: every item that has all the dims in `coords`);
+        `coords` fixes some dims, and an item's other dims run over all their labels, so
+        model.cells(use="offices") reads every item at that label, and model.cells(["fee", "rate"]) reads two items
+        in full. A cell with no value, or a formula that reads one, is "missing" (value None) and does not raise."""
+        for d, label in coords.items():
+            if d not in self.dimensions:
+                raise DimMismatch(f"no dimension {d!r}; declared: {', '.join(self.dimensions)}")
+            self.dimensions[d].require(label)
+        if items is None:
+            names = [n for n, i in self.items.items() if all(d in i.dims for d in coords)]
+        else:
+            names = list(dict.fromkeys(self.item(n).name for n in items))
+            for n in names:
+                for d in coords:
+                    if d not in self.items[n].dims:
+                        raise DimMismatch(f"{n} has no dim {d!r}")
+        rows: list[list[Any]] = []
+        for name in names:
+            item = self.items[name]
+            free = [d for d in item.dims if d not in coords]
+            for combo in itertools.product(*(self.dimensions[d].coords for d in free)):
+                picked = dict(zip(free, map(str, combo)))
+                at = {d: picked[d] if d in picked else str(coords[d]) for d in item.dims}
+                e = self._entries.get((name, tuple(at.values())))
+                entered = e if e is not None and not _is_formula(e.value) else None
+                try:
+                    value, kind = self.get(name, **at), "entered" if entered is not None else "calculated"
+                except MissingValue:
+                    value, kind = None, "missing"
+                rows.append([name, _fmt(at) if at else "", value, kind,
+                             _source_text(entered.source) if entered is not None and entered.source else ""])
+        return Table(["item", "coords", "value", "kind", "source"], rows, title="cells")
+
     def table(self, line_item: str) -> Table:
         """The item as a grid: periods across, other dims down."""
         item = self.item(line_item)
