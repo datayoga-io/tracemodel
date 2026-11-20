@@ -229,6 +229,7 @@ model = tm.Model()
 | `clear_value(line_item, coords)` | Removes a cell's entered value, so it is not entered again (unlike `tm.NIL`, which says the source shows nothing). On a formula item, the item's formula calculates the cell again. |
 | `get(line_item, **coords)` | The value at full coords: a number, or a date for a date item (0 for a nil cell; `tm.NIL` for a nil date). |
 | `entry(line_item, **coords)` | With full coords: an `Entry` (`value`, `source`, `history`). With fewer coords: a `Table` of matching entries. |
+| `cells(items=None, /, **coords)` | Many cells at once, one row each (`item`, `coords`, `value`, `kind`, `source`), as a `Table`. `coords` fixes some dims (an item's other dims run over all their labels); `items` names the items (default: every item that has all the dims in `coords`). `model.cells(use="offices")` reads every item at that label. `kind` is `entered`, `calculated` or `missing`; a cell with no value is `missing` (value `None`) and does not raise. |
 | `table(line_item)` | The item as a grid: `period` across (if the item has it), other dims down. Cells not entered are blank; nil cells show `—`. |
 | `evaluate(formula)` | Runs a lambda of `x` for every combination of the dims its cells leave open, e.g. `model.evaluate(lambda x: x["revenue"] - x["cost"])`: a `Table`, or a number when no dim is open. |
 | `precedents(line_item, deep=False, **coords)` / `dependents(...)` | What a cell's formula can read, and what can read the cell; see Tracing. |

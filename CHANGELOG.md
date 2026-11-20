@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`model.cells()` reads many cells at once:** `model.cells(use="offices")` returns a `Table` with one row per cell
+  (`item`, `coords`, `value`, `kind`, `source`) for every item that has that dim; `model.cells(["fee", "rate"])` reads
+  named items in full, scalars included. A cell with no value is `missing` and does not raise, so one gap no longer
+  stops a read of the rest. Before, reading across items took one `get` or `entry` per item.
+
 - **A source is free plain data, and optional:** `set_value(..., source=None)` takes a dict with any keys
   (`page`, `bbox`, `sha256`, ...) whose values are text, numbers, true/false, none, lists and dicts of those, so
   structured facts no longer need packing into `section` as text. It is copied, saved and reloaded as it was. The
