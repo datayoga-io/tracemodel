@@ -12,10 +12,33 @@ a source you can open, and rules that check it.
 pip install pytracemodel
 ```
 
-**In 30 seconds.** An agent extracts quarterly revenue from a sales report. In Q2, the total does
-not equal North + South. The check finds it, and `explain()` shows each cell it read:
+**In 30 seconds.** tracemodel keeps the numbers of a financial model together with where each one came from, and
+checks them against rules you declare. When a rule fails, it shows which numbers broke it and their sources, so a
+person can find the mistake and fix it. Here is a small case: revenue from a sales report, for Q1 and Q2, as a total
+and as North and South, with the rule that the total equals North + South. The code defines the model, enters the
+numbers with their source, and runs the check.
 
 ```python
+import tracemodel as tm
+
+model = tm.Model()
+model.add_dimension("period", ["Q1", "Q2"])
+model.add_dimension("region", tm.Hierarchy(["/", "/north", "/south"]))
+model.add_item("revenue", dims=("region", "period"), dtype=float)
+
+# The rule: in every period, the total equals North + South, give or take 0.5 for rounding.
+model.add_check(
+    "DQ-1",
+    coords={"period": tm.ANY},
+    expect=lambda x: abs(x["revenue"]["/"] - (x["revenue"]["/north"] + x["revenue"]["/south"])) <= 0.5,
+)
+
+# The numbers from the sales report (Q1, Q2), each entered with where it came from.
+source = {"document": "Q2 sales report", "page": 4}
+for region, q1, q2 in [("/", 1200, 1350), ("/north", 700, 760), ("/south", 500, 545)]:
+    model.set_value("revenue", {"region": region, "period": "Q1"}, q1, source)
+    model.set_value("revenue", {"region": region, "period": "Q2"}, q2, source)
+
 report = model.check()
 report.show()
 ```
@@ -26,6 +49,10 @@ check  coords     result  left  rule  right  diff
 DQ-1   period=Q1  pass       0  <=      0.5  -0.5
 DQ-1   period=Q2  FAIL      45  <=      0.5  44.5
 ```
+
+The rule ran once for each period. Q1 passes. Q2 fails: the total is 1,350, but North + South is 760 + 545 = 1,305.
+`left` is the gap between the total and the sum of its parts, and `right` is the gap the rule allows. To see why, ask
+for an explanation:
 
 ```python
 print(report.filter(period="Q2").explain())
@@ -39,9 +66,9 @@ DQ-1  period=Q2  FAIL  left 45  <=  right 0.5  diff 44.5
       revenue[region=/south, period=Q2] = 545
 ```
 
-Each of those values carries its source (`{"document": "Q2 sales report", "page": 4}`), so a
-reviewer opens the page and fixes the value that is wrong. The model is built as in
-[Example](example.md). To run a complete model of Apple's FY2024–FY2025 10-K, open
+`explain()` shows the rule and every cell it read. Each value carries its source, so a reviewer opens page 4 of the
+sales report and fixes the number that is wrong. The full model is built step by step in [Example](example.md). To run a
+complete model of Apple's FY2024–FY2025 10-K, open
 [apple.ipynb in Colab](https://colab.research.google.com/github/datayoga-io/tracemodel/blob/main/apple.ipynb).
 
 **Compared with Excel and pandas.**
