@@ -20,3 +20,6 @@ income_statement.jsonl
 # Local only, for now
 runs/
 BACKLOG.md
+
+# Built docs site
+site/

@@ -1,0 +1,62 @@
+site_name: tracemodel
+site_url: https://datayoga-io.github.io/tracemodel/
+site_description: >-
+  Traced, checked financial models in Python: every number has an address, a source and rules that check it.
+repo_url: https://github.com/datayoga-io/tracemodel
+repo_name: datayoga-io/tracemodel
+edit_uri: edit/main/docs/
+copyright: Apache License 2.0
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: {icon: material/weather-night, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: {icon: material/weather-sunny, name: Light mode}
+
+# internal planning notes are not part of the site
+exclude_docs: |
+  plans/
+  superpowers/
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      base_path: .
+      check_paths: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: install.md
+      - Concepts and workflow: concepts.md
+      - Example: example.md
+  - Reference:
+      - Model reference: reference/model.md
+      - Data quality: reference/checks.md
+      - Formulas: reference/formulas.md
+      - Dates, text and missing values: reference/values.md
+      - Transactions and recording: reference/changes.md
+      - Tracing and errors: reference/tracing.md
+  - Guides:
+      - Saving and loading: guide/saving.md
+      - Versions, branches and review: guide/versions.md
+      - Working with AI agents: agents.md
+  - More:
+      - Changelog: changelog.md
+      - Inspiration: inspiration.md
+      - Contributing: https://github.com/datayoga-io/tracemodel/blob/main/CONTRIBUTING.md
