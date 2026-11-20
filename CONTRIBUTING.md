@@ -16,6 +16,9 @@ uvx ruff check src tests     # lint
 These are the same two checks CI runs, on both Python versions (`.github/workflows/ci.yml`). Run them before you open
 a PR.
 
+The docs site is built with MkDocs from `docs/`. Preview it with `uv run --only-group docs mkdocs serve`. CI builds it
+with `--strict`, so a broken link fails the check.
+
 ## Adding a feature or a fix
 
 1. **One change per PR.** A feature, a fix, or a docs change, not a mix. Small PRs get reviewed faster.
