@@ -11,15 +11,11 @@ a source you can open, and rules that check it. It also gives AI agents a fixed 
 writes values, and the model keeps them consistent and checks them.
 
 ```bash
-pip install pytracemodel
-pip install "pytracemodel[excel]"    # with model.to_excel
+pip install pytracemodel     # Python 3.12 or later; add "[excel]" for model.to_excel
 ```
 
-Python 3.12 or later, one dependency. [Install notes](https://datayoga-io.github.io/tracemodel/install/).
-
-**In 30 seconds.** tracemodel keeps the numbers of a financial model together with where each one came from.
-You declare the axes of the model (dimensions), what you measure (items), and enter the numbers (values) with their
-source. A formula calculates the rest.
+**In 30 seconds.** You declare the axes of the model (dimensions), what you measure (items), and enter the numbers
+(values) with their source. A formula calculates the rest.
 
 ```python
 import tracemodel as tm
@@ -41,32 +37,20 @@ for (region, period), (revenue, cost) in facts.items():
     model.set_value("revenue", {"region": region, "period": period}, revenue, source)
     model.set_value("cost", {"region": region, "period": period}, cost, source)
 
+# Read it back.
+model.get("profit", region="north", period="Q2")             # 280, calculated from revenue and cost
+model.entry("revenue", region="north", period="Q2").source   # {'document': 'Q2 sales report', 'page': 4}
+model.table("profit")                                        # regions down, periods across:
+# profit
+# region   Q1   Q2
+# north   250  280
+# south   180  195
 ```
 
-Now read the model:
-
-```python
-model.get("profit", region="north", period="Q2")   # 280, calculated from revenue and cost
-model.table("profit")                              # regions down, periods across
-model.entry("revenue", region="north", period="Q2").source   # where an entered number came from
-```
-
-```text
-280
-
-profit
-region   Q1   Q2
-north   250  280
-south   180  195
-
-{'document': 'Q2 sales report', 'page': 4}
-```
-
-Every number has an address (item, region, period), an entered number has a source, and a calculated number has the
-formula that made it. You can also declare rules the numbers must obey, such as "the total equals North + South", and
-the model checks them and shows which numbers broke a rule; see [Data quality](https://datayoga-io.github.io/tracemodel/reference/checks/). A complete model is built step by step in
-[Example](https://datayoga-io.github.io/tracemodel/example/). To run a model of Apple's FY2024–FY2025 10-K, open
-[apple.ipynb in Colab](https://colab.research.google.com/github/datayoga-io/tracemodel/blob/main/apple.ipynb).
+You can also declare rules the numbers must obey, such as "the total equals North + South". The model checks them and
+shows which numbers broke a rule ([Data quality](https://datayoga-io.github.io/tracemodel/reference/checks/)). A complete model is built step by step in the
+[Example](https://datayoga-io.github.io/tracemodel/example/), and Apple's FY2024–FY2025 10-K runs in
+[Colab](https://colab.research.google.com/github/datayoga-io/tracemodel/blob/main/apple.ipynb).
 
 **Compared with Excel and pandas.**
 
@@ -82,22 +66,10 @@ the model checks them and shows which numbers broke a rule; see [Data quality](h
 
 ## Documentation
 
-Full docs: **[datayoga-io.github.io/tracemodel/](https://datayoga-io.github.io/tracemodel/)**
+**[datayoga-io.github.io/tracemodel](https://datayoga-io.github.io/tracemodel/)**: [Concepts](https://datayoga-io.github.io/tracemodel/concepts/), [Example](https://datayoga-io.github.io/tracemodel/example/),
+[Model reference](https://datayoga-io.github.io/tracemodel/reference/model/), [Data quality](https://datayoga-io.github.io/tracemodel/reference/checks/), [Formulas](https://datayoga-io.github.io/tracemodel/reference/formulas/),
+[Dates, text and missing values](https://datayoga-io.github.io/tracemodel/reference/values/), [Tracing and errors](https://datayoga-io.github.io/tracemodel/reference/tracing/),
+[Saving and loading](https://datayoga-io.github.io/tracemodel/guide/saving/), [Versions, branches and review](https://datayoga-io.github.io/tracemodel/guide/versions/),
+[Working with AI agents](https://datayoga-io.github.io/tracemodel/agents/), [Changelog](https://datayoga-io.github.io/tracemodel/changelog/).
 
-| Read | To learn |
-| --- | --- |
-| [Concepts and workflow](https://datayoga-io.github.io/tracemodel/concepts/) | Dimensions, items, checks and values, and the order to build them in |
-| [Example](https://datayoga-io.github.io/tracemodel/example/) | A retail chain's sales by region and quarter, start to finish |
-| [Model reference](https://datayoga-io.github.io/tracemodel/reference/model/) | Every `Model` call, selecting and showing cells |
-| [Data quality](https://datayoga-io.github.io/tracemodel/reference/checks/) | Checks, tolerance and `explain()` |
-| [Formulas](https://datayoga-io.github.io/tracemodel/reference/formulas/) | Per-item and per-cell formulas, and what a formula may use |
-| [Dates, text and missing values](https://datayoga-io.github.io/tracemodel/reference/values/) | Date and text items, time dimensions, nil vs not entered |
-| [Tracing and errors](https://datayoga-io.github.io/tracemodel/reference/tracing/) | `precedents()`, `dependents()`, and the errors raised |
-| [Saving and loading](https://datayoga-io.github.io/tracemodel/guide/saving/) | Model and values files, Excel export |
-| [Versions, branches and review](https://datayoga-io.github.io/tracemodel/guide/versions/) | Commits, branches, `review`, `approve`, `diff` |
-| [Working with AI agents](https://datayoga-io.github.io/tracemodel/agents/) | Two agents: one writes the definition, one fills in values |
-| [Changelog](https://datayoga-io.github.io/tracemodel/changelog/) | What changed in each release |
-
-## Contributing
-
-See [CONTRIBUTING.md](https://github.com/datayoga-io/tracemodel/blob/main/CONTRIBUTING.md). Licensed under [Apache 2.0](https://github.com/datayoga-io/tracemodel/blob/main/LICENSE).
+Contributing: [CONTRIBUTING.md](https://github.com/datayoga-io/tracemodel/blob/main/CONTRIBUTING.md). Licensed under [Apache 2.0](https://github.com/datayoga-io/tracemodel/blob/main/LICENSE).
