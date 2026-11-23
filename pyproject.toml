@@ -1,6 +1,6 @@
 [project]
 name = "pytracemodel"
-version = "0.2.0"
+version = "0.3.0"
 description = "Traced, checked financial models in Python: every number has an address, a source and rules that check it."
 readme = "README.md"
 license = "Apache-2.0"
