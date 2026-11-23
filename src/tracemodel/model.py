@@ -49,8 +49,8 @@ from .values import (
     plain_source,
 )
 
-DTYPES = {"int": int, "float": float, "str": str, "string": str, **dates.DTYPE_NAMES}
-_NOT_NUMBERS = (*dates.TEMPORAL, str)  # nil is not 0 for these: there is no date 0 or empty text
+DTYPES = {"int": int, "float": float, "str": str, "string": str, "bool": bool, **dates.DTYPE_NAMES}
+_NOT_NUMBERS = (*dates.TEMPORAL, str, bool)  # nil is not 0 for these: no date 0, empty text or "no"
 SEVERITIES = ("error", "warning")
 
 
@@ -520,7 +520,7 @@ class Model:
         formula: Formula | Callable[..., Any] | str | None = None,
         description: str | None = None,
     ) -> Item:
-        """Declare a line item: its dims, data type (int, float, str, date or datetime), attrs
+        """Declare a line item: its dims, data type (int, float, str, bool, date or datetime), attrs
         (units, scale, ...) and a description, the item's title as people read it
         ("Lease-related assets and liabilities"), as a dimension's labels have.
 
@@ -548,8 +548,8 @@ class Model:
                 raise DefinitionError(f"item {name!r}: tm.Ref({ref!r}): no dimension {ref!r}; call add_dimension first")
         if isinstance(dtype, str):
             dtype = DTYPES.get(dtype) or dates.dtype_from_name(dtype)  # type: ignore[assignment]
-        if not any(dtype is t for t in (int, float, str, date, datetime)):
-            raise DefinitionError(f"item {name!r}: dtype must be int, float, str, date or datetime "
+        if not any(dtype is t for t in (int, float, str, bool, date, datetime)):
+            raise DefinitionError(f"item {name!r}: dtype must be int, float, str, bool, date or datetime "
                                   f"(or tm.Ref(dim) for a pointer), got {dtype!r}")
         if attrs is not None and not isinstance(attrs, Mapping):
             raise DefinitionError(f"item {name!r}: attrs must be a dict")
@@ -926,6 +926,8 @@ class Model:
                     lhs, rhs = (None if v is _NO_VALUE else v for v in (lhs, rhs))
                 else:
                     result = run_check(formula, self, at, raw)
+                    if isinstance(result, Bound) and result._cell is not None and result._cell.item.dtype is bool:
+                        result = result._get()  # a yes/no item is a condition: lambda x: x["firm"]
             except Missing:  # missing never counts as 0
                 pass
             except Exception as e:  # noqa: BLE001 - an error in the check, or a cell it reads can't be calculated
@@ -1468,7 +1470,7 @@ class Model:
             raise Missing
         if value is NIL:
             if cell.item.dtype in _NOT_NUMBERS:  # nil counts as 0, but there is no date 0 or empty text
-                what = "text" if cell.item.dtype is str else "date"
+                what = {str: "text", bool: "yes or no"}.get(cell.item.dtype, "date")
                 raise DefinitionError(
                     f"{cell!r}{_fmt(cell.resolve(at))} is nil: it has no {what} to compute with; "
                     f"test {cell!r}.is_nil() first"
@@ -1500,6 +1502,10 @@ class Model:
             if item.ref is not None and value not in self.dimensions[item.ref]:
                 raise InvalidValue(f"{item.name} points at {item.ref}: {value!r} is not one of its labels"
                                    f"{_labels_hint(self.dimensions[item.ref].coords)}")
+        elif item.dtype is bool:
+            if not isinstance(value, bool):
+                raise InvalidValue(f"{item.name} is bool: value must be True or False, got {value!r}; "
+                                   f"when the source does not say, enter tm.NIL")
         elif isinstance(value, bool) or not isinstance(value, (int, float)):
             raise InvalidValue(f"{item.name}: value must be a number, got {value!r}")
         elif item.dtype is int and not isinstance(value, int):
@@ -1534,7 +1540,7 @@ def _typed(value: Any, item: Item, formula: object, full: Mapping[str, str]) -> 
     if item.dtype is int and isinstance(value, float):
         return _whole(value, item, formula, full)
     if (item.dtype in (int, float) and kind == "number") or (item.dtype is date and kind == "date") \
-            or (item.dtype is datetime and kind == "datetime") or (item.dtype is str and kind == "str"):
+            or (item.dtype is datetime and kind == "datetime") or (item.dtype is str and kind == "str") or (item.dtype is bool and kind == "bool"):
         return value
     if item.dtype is datetime and kind == "date":
         return datetime(value.year, value.month, value.day)

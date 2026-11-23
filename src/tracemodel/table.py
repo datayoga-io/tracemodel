@@ -85,7 +85,7 @@ def _fmt(v: Any) -> str:
     if v is None:
         return ""
     if isinstance(v, bool):
-        return str(v)
+        return "yes" if v else "no"
     if isinstance(v, int):
         return f"{v:,}"
     if isinstance(v, float):

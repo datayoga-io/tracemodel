@@ -100,8 +100,8 @@ def test_item_needs_declared_dims():
 
 
 def test_item_dtype_must_be_supported(empty):
-    with pytest.raises(tm.DefinitionError, match="dtype must be int, float, str, date or datetime"):
-        empty.add_item("x", dims=("period",), dtype=bool)
+    with pytest.raises(tm.DefinitionError, match="dtype must be int, float, str, bool, date or datetime"):
+        empty.add_item("x", dims=("period",), dtype=complex)
 
 
 def test_re_adding_same_item_is_a_no_op(empty):
