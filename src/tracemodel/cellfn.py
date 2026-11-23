@@ -334,18 +334,18 @@ allow_attrs(StringAccessor, {"contains", "endswith", "len", "lower", "replace", 
 
 
 def run(formula: Formula, model: Model, item: Item, full: Mapping[str, str], reads: list) -> Any:
-    """A formula's value for one cell: a number, text, a date, tm.NIL or None (missing)."""
+    """A formula's value for one cell: a number, text, True or False, a date, tm.NIL or None (missing)."""
     result = formula.call(Bound(model, model[item.name], full, reads))
     if isinstance(result, Bound):
         return result._get()
-    if result is None or isinstance(result, (int, float, str, date, timedelta)) and not isinstance(result, bool):
+    if result is None or isinstance(result, (int, float, str, bool, date, timedelta)):
         return result  # the model checks it against the item's dtype
     from .values import NIL
 
     if result is NIL:
         return result
     raise DefinitionError(f"formula {formula!r} returned {result!r} for {item.name} {dict(full)}; "
-                          "it must return a number, text for a str item, or a date for a date item")
+                          "it must return a number, text for a str item, True or False for a bool item, or a date for a date item")
 
 
 def run_check(formula: Formula, model: Model, at: Mapping[str, str], reads: list) -> Any:

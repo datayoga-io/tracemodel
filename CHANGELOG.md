@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Yes/no items:** `add_item(..., dtype=bool)` (or `"bool"`) holds `True` or `False`. `set_value` rejects anything
+  else, so a flag can no longer be `2`; a formula or check uses it as a plain `bool` (`if x["firm"]`,
+  `expect=lambda x: x["firm"]`); tables show `yes` and `no`; it is saved as `true` and `false`. When the source does
+  not say, enter `tm.NIL`, which is not `False`. Before, a flag had to be an `int` item of `0` and `1`. Closes #43.
+
 - **`model.cells()` reads many cells at once:** `model.cells(use="offices")` returns a `Table` with one row per cell
   (`item`, `coords`, `value`, `kind`, `source`) for every item that has that dim; `model.cells(["fee", "rate"])` reads
   named items in full, scalars included. A cell with no value is `missing` and does not raise, so one gap no longer

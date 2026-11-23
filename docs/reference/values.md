@@ -88,6 +88,31 @@ model.add_check("KNOWN-STATUS", coords={"contract": tm.ANY},
   a `str` item.
 - Excel writes text cells as text, so a value starting with `=` never becomes an Excel formula.
 
+## Yes/no
+
+An item can hold a yes/no fact: whether a payment is firm, whether a line is in the base case. It
+is sourced, replaced and kept in the history like any value. Before, such a flag had to be an
+`int` item of `0` and `1`, which also accepts `2`.
+
+```python
+model.add_item("firm", ("term",), dtype=bool)             # or dtype="bool"
+model.set_value("firm", {"term": "T1"}, True, SRC)
+model.add_item("firm_amount", ("term",), formula=lambda x: x["firm"] * x["amount"])
+model.add_check("FIRM-WHEN-BIG", coords={"term": tm.ANY},
+                expect=lambda x: x["firm"] or x["amount"] < 100)
+```
+
+- `set_value` takes `True` or `False` (JSON `true` and `false`) and nothing else: `1`, `0`, `"yes"`
+  and `""` raise `InvalidValue`. A bool is not a number either, so `True` in a `float` item raises.
+- In a formula or check a bool cell is a Python `bool`: use it in `if`, `and`, `or` and `not`, or
+  multiply it by a number. A check may return a bool item as its condition: `expect=lambda x: x["firm"]`.
+- A formula's result must fit its dtype: a number in a `bool` item raises, and so does a bool in a
+  number item. Write `x["amount"] > 100`, not `x["amount"]`.
+- Tables show `yes` and `no`. The definition and the values file save `"dtype": "bool"`, `true`
+  and `false`.
+- When the source does not say, enter `tm.NIL`. As with text and dates, a nil bool isn't `False`:
+  `get()` gives `tm.NIL`, and computing with it raises; test `is_nil()` first.
+
 ## Time dimensions
 
 A time dimension's labels know their dates, as pandas' `PeriodIndex` does (and as Anaplan's and
