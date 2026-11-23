@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-11-23
+
 - **Yes/no items:** `add_item(..., dtype=bool)` (or `"bool"`) holds `True` or `False`. `set_value` rejects anything
   else, so a flag can no longer be `2`; a formula or check uses it as a plain `bool` (`if x["firm"]`,
   `expect=lambda x: x["firm"]`); tables show `yes` and `no`; it is saved as `true` and `false`. When the source does
