@@ -11,7 +11,7 @@ a source you can open, and rules that check it. It also gives AI agents a fixed 
 writes values, and the model keeps them consistent and checks them.
 
 ```bash
-pip install pytracemodel     # Python 3.12 or later; add "[excel]" for model.to_excel
+pip install pytracemodel     # Python 3.12 or later; add "[excel]" for model.to_excel, "[duckdb]" for a store
 ```
 
 **In 30 seconds.** You declare the axes of the model (dimensions), what you measure (items), and enter the numbers

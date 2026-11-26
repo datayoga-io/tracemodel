@@ -35,6 +35,7 @@ Changelog = "https://github.com/datayoga-io/tracemodel/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 excel = ["openpyxl>=3.1"]  # model.to_excel
 pandas = ["pandas>=2"]  # Table.to_pandas
+duckdb = ["duckdb>=2.0.1"]  # tracemodel.store.duck.DuckStore: models kept in a DuckDB file
 
 [build-system]
 requires = ["hatchling>=1.27"]
@@ -45,6 +46,7 @@ packages = ["src/tracemodel"]  # installed as pytracemodel, imported as tracemod
 
 [dependency-groups]
 dev = [
+    "duckdb>=2.0.1",
     "ipython>=9.17.1",
     "jupyterlab>=4.6.4",
     "openpyxl>=3.1",

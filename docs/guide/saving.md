@@ -76,3 +76,26 @@ model.to_excel("apple.xlsx", title="Apple FY2024-FY2025 (Form 10-K)", sections={
   status, a legend and links.
 
 The workbook is a report: it holds values, not Excel formulas, and isn't read back.
+
+## Keeping many models in a store
+
+A `Store` keeps any number of named models and gives one back as a `Repo`. The DuckDB backend keeps them in one file:
+
+```python
+from tracemodel.store.duck import DuckStore      # pip install "pytracemodel[duckdb]"
+
+with DuckStore("models.duckdb", write=True) as store:
+    store.import_model("retail", model.to_dict(), rows)   # rows: the lines of model.to_jsonl
+    store.import_run("runs/2026-q3")                      # a folder with model.json and values.jsonl
+
+with DuckStore("models.duckdb") as store:                 # read-only unless write=True
+    store.models()                                        # name, title and size of each
+    repo = store.repo("retail")                           # a Repo, with one commit for each commit stored
+```
+
+- **An update is an insert.** A cell's value is its row in the latest commit, so nothing is overwritten and a restated
+  cell keeps its earlier values (`repo.history`).
+- **One writer at a time**, and any number of readers. To back up, copy the file when no writer is open.
+- **Another backend** is one class: subclass `tracemodel.store.Store`, fill in `models`, `definition`, `cells`,
+  `commits` and `import_model`, and you get `repo` and `import_run` for free. Code that takes a `Store` does not
+  change.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Keep models in a store:** `tracemodel.store.Store` is the interface for where models are kept between runs: a
+  backend lists its models and reads and writes their definition, cells and commits, and `store.repo(name)` gives the
+  model back as a `Repo` (one commit per commit it holds). The first backend is `tracemodel.store.duck.DuckStore`, a
+  DuckDB file that holds any number of models; a change is an insert, so nothing is overwritten and a restated cell
+  keeps its earlier values. Install it with `pip install "pytracemodel[duckdb]"` (DuckDB 2.0 or later).
+
 ## 0.3.0 — 2026-11-23
 
 - **Yes/no items:** `add_item(..., dtype=bool)` (or `"bool"`) holds `True` or `False`. `set_value` rejects anything

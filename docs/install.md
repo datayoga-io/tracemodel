@@ -6,6 +6,7 @@ which runs formulas safely; the Excel export needs openpyxl.
 ```bash
 pip install pytracemodel
 pip install "pytracemodel[excel]"    # with model.to_excel
+pip install "pytracemodel[duckdb]"   # with tracemodel.store.duck.DuckStore
 ```
 
 ```python
